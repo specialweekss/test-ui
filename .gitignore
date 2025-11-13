@@ -5,3 +5,4 @@ local
 release
 node_modules
 bin/js/bundles
+settings/BuildSettings.json
