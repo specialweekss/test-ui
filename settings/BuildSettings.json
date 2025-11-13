@@ -1,0 +1,16 @@
+{
+  "name": "LayaProject1",
+  "startupScene": "res://9b931ecf-fde9-44dd-acf3-15f8dc807965",
+  "android": {
+    "targetArchitectures": {
+      "ARMv7": false,
+      "ARM64": true,
+      "x86": false,
+      "x86-64": false
+    },
+    "exportFormat": "APK"
+  },
+  "wxgame": {
+    "appid": "wx2ebd87a47313656f"
+  }
+}
