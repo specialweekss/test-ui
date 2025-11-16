@@ -21,6 +21,16 @@ export class GameDataManager {
     private static getCurrentGameData: () => any = null; // 获取当前游戏数据的回调函数
     private static isSaving: boolean = false; // 是否正在保存中（防止重复保存）
     private static autoSaveInterval: number = 1000; // 自动保存间隔（毫秒），默认1秒
+    private static lastGameData: any = null; // 上一次要上传的游戏数据（用于重试）
+    private static needRetryLastData: boolean = false; // 是否需要重试上一次的数据
+    private static retryCount: number = 0; // 定时器触发的重试次数（用于统计连续失败次数）
+    private static shouldStopUpload: boolean = false; // 是否应该停止上传（连续3次失败后）
+    private static isRetrying: boolean = false; // 是否正在重试中（用于控制按钮状态）
+    
+    // 错误弹窗回调
+    private static onNetworkError: () => void = null; // 网络错误时的回调函数（用于显示弹窗）
+    private static updateRetryButton: (text: string, enabled: boolean) => void = null; // 更新重试按钮的回调函数
+    private static closeRetryDialog: () => void = null; // 关闭重试弹窗的回调函数
     
     /**
      * 设置用户ID
@@ -730,6 +740,67 @@ export class GameDataManager {
     }
     
     /**
+     * 设置网络错误回调函数（用于显示错误弹窗）
+     * @param onNetworkError 网络错误时的回调函数
+     */
+    public static setOnNetworkError(onNetworkError: () => void): void {
+        this.onNetworkError = onNetworkError;
+    }
+    
+    /**
+     * 设置更新重试按钮的回调函数
+     * @param updateRetryButton 更新重试按钮的回调函数（text: 按钮文本, enabled: 是否可点击）
+     */
+    public static setUpdateRetryButton(updateRetryButton: (text: string, enabled: boolean) => void): void {
+        this.updateRetryButton = updateRetryButton;
+    }
+    
+    /**
+     * 设置关闭重试弹窗的回调函数
+     * @param closeRetryDialog 关闭重试弹窗的回调函数
+     */
+    public static setCloseRetryDialog(closeRetryDialog: () => void): void {
+        this.closeRetryDialog = closeRetryDialog;
+    }
+    
+    /**
+     * 开始重试（用于重试按钮点击后）
+     */
+    public static startRetry(): void {
+        this.shouldStopUpload = false;
+        this.needRetryLastData = false;
+        this.retryCount = 0;
+        this.lastGameData = null;
+        this.isRetrying = true; // 标记正在重试中
+        console.log("开始重试上传");
+        
+        // 更新按钮状态为"重连中..."
+        if (this.updateRetryButton) {
+            this.updateRetryButton("重连中...", false);
+        }
+        
+        // 立即触发一次保存（使用当前游戏数据）
+        if (this.getCurrentGameData) {
+            const gameData = this.getCurrentGameData();
+            if (gameData) {
+                this.lastGameData = gameData;
+                this.doSaveUserData(gameData);
+            }
+        }
+    }
+    
+    /**
+     * 重置上传状态（用于重试按钮点击后）
+     */
+    public static resetUploadState(): void {
+        this.shouldStopUpload = false;
+        this.needRetryLastData = false;
+        this.retryCount = 0;
+        this.lastGameData = null;
+        console.log("重置上传状态，允许重新上传");
+    }
+    
+    /**
      * 启动定时保存
      * @param getCurrentGameData 获取当前游戏数据的回调函数
      */
@@ -766,9 +837,64 @@ export class GameDataManager {
      * 执行保存操作（定时器调用）
      */
     private static performSave(): void {
-        // 如果正在保存中，跳过本次保存
+        // 如果已经连续失败3次，停止上传
+        if (this.shouldStopUpload) {
+            console.log("已连续失败3次，停止上传数据");
+            return;
+        }
+        
+        // 如果正在保存中，标记需要重试上一次的上传
         if (this.isSaving) {
-            console.log("上次保存尚未完成，跳过本次保存");
+            if (this.lastGameData) {
+                console.log("上次保存尚未完成，标记需要重试上一次的上传");
+                this.needRetryLastData = true;
+            } else {
+                console.log("上次保存尚未完成，但没有上一次的数据，跳过本次保存");
+            }
+            return;
+        }
+        
+        // 检查是否需要重试上一次的数据
+        if (this.needRetryLastData && this.lastGameData) {
+            const maxRetries = 3;
+            this.retryCount++;
+            
+            if (this.retryCount <= maxRetries) {
+                console.log(`重试上一次的上传（第${this.retryCount}/${maxRetries}次）`);
+                // 更新按钮状态为"重连中..."
+                if (this.updateRetryButton) {
+                    this.updateRetryButton("重连中...", false);
+                }
+                // 注意：不清除 needRetryLastData，如果本次重试失败，handleSaveFailure 会保持它为 true
+                // 重试上一次的数据上传
+                this.doSaveUserData(this.lastGameData, undefined, 0);
+            } else {
+                // 连续3次重试都失败，显示错误弹窗并停止上传
+                console.error("========== 保存失败（已连续重试3次） ==========");
+                console.error("==============================");
+                
+                // 标记停止上传
+                this.shouldStopUpload = true;
+                this.isRetrying = false; // 重置重试标志
+                
+                // 重置状态
+                this.needRetryLastData = false;
+                this.retryCount = 0;
+                this.lastGameData = null;
+                
+                // 恢复按钮为可点击状态（连续3次失败后）
+                if (this.updateRetryButton) {
+                    this.updateRetryButton("重试", true);
+                }
+                
+                // 显示错误弹窗
+                if (this.onNetworkError) {
+                    console.log("调用网络错误回调，显示弹窗");
+                    this.onNetworkError();
+                } else {
+                    console.error("网络错误回调未设置！");
+                }
+            }
             return;
         }
         
@@ -783,6 +909,12 @@ export class GameDataManager {
             console.log("获取游戏数据失败，跳过保存");
             return;
         }
+        
+        // 保存当前要上传的数据（用于后续重试）
+        this.lastGameData = gameData;
+        
+        // 重置重试次数（开始新的上传周期）
+        this.retryCount = 0;
         
         // 执行保存
         this.doSaveUserData(gameData);
@@ -801,8 +933,9 @@ export class GameDataManager {
      * 执行保存用户游戏数据
      * @param gameData 游戏数据对象
      * @param callback 回调函数
+     * @param retryCount 当前重试次数（内部使用，默认0）
      */
-    private static doSaveUserData(gameData: any, callback?: (success: boolean) => void): void {
+    private static doSaveUserData(gameData: any, callback?: (success: boolean) => void, retryCount: number = 0): void {
         // 如果正在保存中，跳过（防止重复保存）
         if (this.isSaving) {
             console.log("正在保存中，跳过本次保存");
@@ -811,6 +944,9 @@ export class GameDataManager {
             }
             return;
         }
+        
+        // 保存当前要上传的数据（用于后续重试）
+        this.lastGameData = gameData;
         
         const url = `${this.apiBaseUrl}/api/game/user-data`;
         
@@ -833,6 +969,37 @@ export class GameDataManager {
         const resetSavingState = () => {
             if (this.isSaving) {
                 this.isSaving = false;
+            }
+        };
+        
+        // 辅助函数：处理保存失败（标记失败，由定时器触发重试）
+        const handleSaveFailure = (errorMessage: string) => {
+            resetSavingState();
+            console.error("========== 保存失败 ==========");
+            console.error("失败原因:", errorMessage);
+            console.error("==============================");
+            
+            // 如果正在重试（弹窗显示中），检查是否已经失败3次
+            if (this.isRetrying) {
+                // 只有在连续失败3次后才恢复按钮为可点击状态
+                if (this.retryCount >= 3) {
+                    this.isRetrying = false; // 重置重试标志
+                    if (this.updateRetryButton) {
+                        this.updateRetryButton("重试", true);
+                    }
+                } else {
+                    // 未达到3次，保持"重连中..."状态
+                    if (this.updateRetryButton) {
+                        this.updateRetryButton("重连中...", false);
+                    }
+                }
+            }
+            
+            // 标记需要重试，由定时器在下一秒触发重试
+            this.needRetryLastData = true;
+            
+            if (callback) {
+                callback(false);
             }
         };
         
@@ -870,28 +1037,22 @@ export class GameDataManager {
                 
                 // 超时处理
                 httpRequest.ontimeout = () => {
-                    resetSavingState();
                     console.error("========== 请求超时 ==========");
                     console.error("请求方式: POST");
                     console.error("接口地址:", url);
                     console.error("失败原因: 请求超时（30秒）");
                     console.error("==============================");
-                    if (callback) {
-                        callback(false);
-                    }
+                    handleSaveFailure("请求超时（30秒）");
                 };
                 
                 // 网络错误处理
                 httpRequest.onerror = () => {
-                    resetSavingState();
                     console.error("========== 请求失败 ==========");
                     console.error("请求方式: POST");
                     console.error("接口地址:", url);
                     console.error("失败原因: 网络错误");
                     console.error("==============================");
-                    if (callback) {
-                        callback(false);
-                    }
+                    handleSaveFailure("网络错误");
                 };
                 
                 // 手动监听响应（因为绕过了 LayaAir 的 send 方法）
@@ -938,20 +1099,29 @@ export class GameDataManager {
                                     this.handleTokenExpired(() => {
                                         // 重新发送原请求
                                         console.log("重新发送保存请求");
-                                        this.doSaveUserData(gameData, callback);
+                                        this.doSaveUserData(gameData, callback, 0);
                                     });
                                 } else if (result.code === 200) {
                                     console.log("响应结果: 成功");
                                     console.log("返回数据:", JSON.stringify(result.data, null, 2));
+                                    // 上传成功，清除重试标记和重试次数，重置停止标志
+                                    this.needRetryLastData = false;
+                                    this.retryCount = 0;
+                                    this.shouldStopUpload = false;
+                                    this.isRetrying = false; // 重置重试标志
+                                    
+                                    // 如果正在重试（弹窗显示中），关闭弹窗
+                                    if (this.closeRetryDialog) {
+                                        this.closeRetryDialog();
+                                    }
+                                    
                                     if (callback) {
                                         callback(true);
                                     }
                                 } else {
                                     console.log("响应结果: 失败");
                                     console.log("错误信息:", result.message);
-                                    if (callback) {
-                                        callback(false);
-                                    }
+                                    handleSaveFailure(`服务器返回错误: ${result.message || "未知错误"}`);
                                 }
                                 console.log("==============================");
                             } catch (error) {
@@ -962,9 +1132,7 @@ export class GameDataManager {
                                 console.error("异常信息:", error);
                                 console.error("原始数据:", httpRequest.responseText);
                                 console.error("==============================");
-                                if (callback) {
-                                    callback(false);
-                                }
+                                handleSaveFailure(`解析响应数据失败: ${error}`);
                             }
                         } else {
                             // 请求失败（HTTP状态码错误）
@@ -999,12 +1167,10 @@ export class GameDataManager {
                                 this.handleTokenExpired(() => {
                                     // 重新发送保存请求
                                     console.log("重新发送保存请求");
-                                    this.doSaveUserData(gameData, callback);
+                                    this.doSaveUserData(gameData, callback, 0);
                                 });
                             } else {
-                                if (callback) {
-                                    callback(false);
-                                }
+                                handleSaveFailure(`HTTP状态码错误: ${httpRequest.status} ${httpRequest.statusText}`);
                             }
                         }
                     }
@@ -1014,16 +1180,13 @@ export class GameDataManager {
                 httpRequest.send(postData);
             } catch (error) {
                 // 如果发送请求时出现异常，也要重置状态
-                resetSavingState();
                 console.error("========== 请求异常 ==========");
                 console.error("请求方式: POST");
                 console.error("接口地址:", url);
                 console.error("异常类型: 发送请求时发生异常");
                 console.error("异常信息:", error);
                 console.error("==============================");
-                if (callback) {
-                    callback(false);
-                }
+                handleSaveFailure(`发送请求时发生异常: ${error}`);
             }
         } else {
             // 如果无法访问 http 对象，使用默认方式（可能不会设置正确的 Content-Type）
@@ -1071,13 +1234,22 @@ export class GameDataManager {
                     console.log("==============================");
                     
                     if (result.code === 200) {
+                        // 上传成功，清除重试标记和重试次数，重置停止标志
+                        this.needRetryLastData = false;
+                        this.retryCount = 0;
+                        this.shouldStopUpload = false;
+                        this.isRetrying = false; // 重置重试标志
+                        
+                        // 如果正在重试（弹窗显示中），关闭弹窗
+                        if (this.closeRetryDialog) {
+                            this.closeRetryDialog();
+                        }
+                        
                         if (callback) {
                             callback(true);
                         }
                     } else {
-                        if (callback) {
-                            callback(false);
-                        }
+                        handleSaveFailure(`服务器返回错误: ${result.message || "未知错误"}`);
                     }
                 } catch (error) {
                     console.error("========== 请求异常 ==========");
@@ -1087,24 +1259,19 @@ export class GameDataManager {
                     console.error("异常信息:", error);
                     console.error("原始数据:", data);
                     console.error("==============================");
-                    if (callback) {
-                        callback(false);
-                    }
+                    handleSaveFailure(`解析响应数据失败: ${error}`);
                 }
             });
             
             // 请求失败
             request.once(Laya.Event.ERROR, null, (error: any) => {
-                resetSavingState();
                 console.error("========== 请求失败 ==========");
                 console.error("请求方式: POST");
                 console.error("接口地址:", url);
                 console.error("失败原因: 网络请求失败");
                 console.error("错误信息:", error);
                 console.error("==============================");
-                if (callback) {
-                    callback(false);
-                }
+                handleSaveFailure(`网络请求失败: ${error}`);
             });
             
             request.send(url, postData, 'post', 'json', headers);

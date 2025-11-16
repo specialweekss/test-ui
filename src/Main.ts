@@ -404,14 +404,17 @@ export class Main extends Laya.Script {
     
     /**
      * 显示网络错误弹窗
+     * @param isUploadError 是否为上传数据时的错误（true: 上传错误，使用新的重试逻辑；false: 登录/加载错误，使用原来的逻辑）
      */
-    private showNetworkErrorDialog(): void {
-        if (!this.loadingPage) {
-            return;
-        }
-        
+    private showNetworkErrorDialog(isUploadError: boolean = false): void {
         const stageWidth = Laya.stage.width || 750;
         const stageHeight = Laya.stage.height || 1334;
+        
+        // 检查是否已经存在弹窗，如果存在则先移除
+        const existingDialog = Laya.stage.getChildByName("networkErrorDialog");
+        if (existingDialog) {
+            existingDialog.removeSelf();
+        }
         
         // 创建弹窗容器
         const dialog = new Laya.Sprite();
@@ -480,12 +483,69 @@ export class Main extends Laya.Script {
         
         retryBtn.mouseEnabled = true;
         retryBtn.on(Laya.Event.CLICK, this, () => {
-            this.onRetryLoadData();
+            if (isUploadError) {
+                // 上传错误：不关闭弹窗，开始重试
+                GameDataManager.startRetry();
+            } else {
+                // 登录/加载错误：关闭弹窗，使用原来的逻辑
+                dialog.removeSelf();
+                this.onRetryLoadData();
+            }
         });
         dialogBg.addChild(retryBtn);
         
-        // 添加到加载页面
-        this.loadingPage.addChild(dialog);
+        // 只有上传错误时才保存弹窗和按钮引用，用于更新
+        if (isUploadError) {
+            (this as any).networkErrorDialog = dialog;
+            (this as any).networkErrorRetryBtn = retryBtn;
+            (this as any).networkErrorRetryLabel = retryLabel;
+        }
+        
+        // 直接添加到舞台（不依赖loadingPage）
+        Laya.stage.addChild(dialog);
+    }
+    
+    /**
+     * 更新重试按钮状态
+     */
+    private updateRetryButton(text: string, enabled: boolean): void {
+        const retryBtn = (this as any).networkErrorRetryBtn as Laya.Sprite;
+        const retryLabel = (this as any).networkErrorRetryLabel as Laya.Text;
+        
+        if (retryBtn && retryLabel) {
+            retryLabel.text = text;
+            retryBtn.mouseEnabled = enabled;
+            
+            // 根据状态改变按钮颜色
+            if (enabled) {
+                // 可点击：绿色
+                retryBtn.graphics.clear();
+                const retryBtnWidth = retryBtn.width;
+                const retryBtnHeight = retryBtn.height;
+                retryBtn.graphics.drawRect(0, 0, retryBtnWidth, retryBtnHeight, "#4CAF50");
+                retryBtn.graphics.drawRect(2, 2, retryBtnWidth - 4, retryBtnHeight - 4, "#45a049", "#45a049", 2);
+            } else {
+                // 不可点击：灰色
+                retryBtn.graphics.clear();
+                const retryBtnWidth = retryBtn.width;
+                const retryBtnHeight = retryBtn.height;
+                retryBtn.graphics.drawRect(0, 0, retryBtnWidth, retryBtnHeight, "#cccccc");
+                retryBtn.graphics.drawRect(2, 2, retryBtnWidth - 4, retryBtnHeight - 4, "#999999", "#999999", 2);
+            }
+        }
+    }
+    
+    /**
+     * 关闭重试弹窗
+     */
+    private closeRetryDialog(): void {
+        const dialog = (this as any).networkErrorDialog as Laya.Sprite;
+        if (dialog) {
+            dialog.removeSelf();
+            (this as any).networkErrorDialog = null;
+            (this as any).networkErrorRetryBtn = null;
+            (this as any).networkErrorRetryLabel = null;
+        }
     }
     
     /**
@@ -3677,6 +3737,21 @@ export class Main extends Laya.Script {
             console.log("离线收益未处理，暂不启动自动保存");
             return;
         }
+        
+        // 设置网络错误回调（用于显示错误弹窗，上传数据时的错误）
+        GameDataManager.setOnNetworkError(() => {
+            this.showNetworkErrorDialog(true); // true 表示是上传错误
+        });
+        
+        // 设置更新重试按钮的回调
+        GameDataManager.setUpdateRetryButton((text: string, enabled: boolean) => {
+            this.updateRetryButton(text, enabled);
+        });
+        
+        // 设置关闭重试弹窗的回调
+        GameDataManager.setCloseRetryDialog(() => {
+            this.closeRetryDialog();
+        });
         
         // 启动定时保存
         // 注意：如需修改自动保存间隔，请直接修改 GameDataManager 中的 autoSaveInterval 变量，然后重启游戏
