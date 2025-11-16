@@ -1,7 +1,14 @@
 const { regClass, property } = Laya;
+import { GameDataManager } from "./GameDataManager";
 
 @regClass()
 export class Main extends Laya.Script {
+
+    // 登录测试模式开关（true: 登录后暂停，不执行后续任务；false: 正常模式）
+    private static readonly LOGIN_TEST_MODE: boolean = false;
+
+    // 培训功能需要解锁的助理数量
+    private static readonly TRAINING_REQUIRED_ASSISTANT_COUNT: number = 9;
 
     // 玩家信息
     private playerLevel: number = 1; // 等级从1开始
@@ -9,9 +16,11 @@ export class Main extends Laya.Script {
     private clickRewardBase: number = 100; // 单次点击金币获取量基础值（初始100）
     private clickMultiplier: number = 1.0; // 点击收益倍率（初始1.0，即100%）
     private upgradeCost: number = 10; // 升级所需金币（初始10）
+    private trainingCount: number = 0; // 助理培训次数（初始0）
 
     // UI组件
     private avatarImg: Laya.Sprite;
+    private nameLabel: Laya.Text; // 玩家名称显示
     private levelLabel: Laya.Text;
     private multiplierLabel: Laya.Text; // 倍率显示（点击收益）
     private multiplierLabelBg: Laya.Sprite; // 倍率显示背景
@@ -29,10 +38,21 @@ export class Main extends Laya.Script {
     private popupContainer: Laya.Sprite; // 弹窗容器
     private activePopups: Array<{sprite: Laya.Sprite, timer: number, position: "center" | "money"}> = []; // 活跃的弹窗列表
     
+    // Ticket动画管理
+    private ticketContainer: Laya.Sprite; // Ticket容器（用于管理ticket动画，层级在背景上面，其他按钮下面）
+    
     // 窗口管理
     private assistantWindow: Laya.Sprite; // 助理窗口容器
     private settingsWindow: Laya.Sprite; // 设置窗口容器
     private challengeWindow: Laya.Sprite; // 挑战窗口容器
+    
+    // 加载页面管理
+    private loadingPage: Laya.Sprite; // 加载页面容器
+    private loginButton: any; // 微信登录按钮（wx.createUserInfoButton返回的对象）
+    private progressBar: Laya.Sprite; // 进度条背景
+    private progressBarFill: Laya.Sprite; // 进度条填充
+    private progressLabel: Laya.Text; // 进度文字
+    private userToken: string = ""; // 自定义登录态token
     
     // 助理数据
     private assistants: Array<{
@@ -58,6 +78,20 @@ export class Main extends Laya.Script {
     // 连点功能相关
     private upgradeRepeatHandler: Function = null; // 主页面升级连点处理函数
     private assistantRepeatHandlers: Map<number, Function> = new Map(); // 助理操作连点处理函数映射（key: assistantId）
+    
+    // 数据加载状态
+    private dataLoaded: boolean = false; // 数据是否已加载
+    
+    // 助理after图片显示相关
+    private assistantAfterImage: Laya.Sprite; // 桌子上方显示的助理after图片
+    private clickRewardCount: number = 0; // 点击收益计数（每10次切换一次助理图片）
+    private currentAssistantIndex: number = 0; // 当前显示的助理索引（在已解锁助理列表中的索引）
+    private isShowingAfter: boolean = true; // 当前是否显示after图片（true: after, false: success）
+    private isSwitchingAssistant: boolean = false; // 是否正在切换助理图片（用于防止动画冲突）
+    private fullScreenAfterImage: Laya.Sprite; // 全屏显示的助理after图片（解锁时显示）
+    private fullScreenAssistantNameLabel: Laya.Text; // 全屏显示时的助理名字文本（上方）
+    private fullScreenContinueLabel: Laya.Text; // 全屏显示时的"点按任意键继续"文本（下方）
+    private fullScreenBottomMask: Laya.Sprite; // 全屏显示时图片下方的黑色遮挡
 
     onAwake() {
         console.log("onAwake called");
@@ -70,9 +104,387 @@ export class Main extends Laya.Script {
     onStart() {
         console.log("onStart called, stage size:", Laya.stage.width, Laya.stage.height);
         // 延迟一帧确保stage已初始化
-        Laya.timer.frameOnce(1, this, this.createUI);
+        Laya.timer.frameOnce(1, this, this.showLoadingPage);
+    }
+    
+    /**
+     * 获取服务器资源URL
+     * @param resourcePath 资源相对路径，如 "resources/ticket.png" 或 "resources/assist/1/head.png"
+     * @returns 完整的服务器资源URL
+     */
+    private getServerResourceUrl(resourcePath: string): string {
+        const apiBaseUrl = GameDataManager.getApiBaseUrl();
+        // 确保路径以 / 开头
+        const normalizedPath = resourcePath.startsWith('/') ? resourcePath : `/${resourcePath}`;
+        return `${apiBaseUrl}${normalizedPath}`;
     }
 
+    /**
+     * 显示加载页面
+     */
+    private showLoadingPage(): void {
+        console.log("显示加载页面");
+        const stageWidth = Laya.stage.width || 750;
+        const stageHeight = Laya.stage.height || 1334;
+        
+        // 创建加载页面容器
+        this.loadingPage = new Laya.Sprite();
+        this.loadingPage.name = "loadingPage";
+        this.loadingPage.size(stageWidth, stageHeight);
+        
+        // 创建背景（深色背景）
+        const bg = new Laya.Sprite();
+        bg.name = "loadingBg";
+        bg.size(stageWidth, stageHeight);
+        bg.graphics.drawRect(0, 0, stageWidth, stageHeight, "#1a1a2e");
+        this.loadingPage.addChild(bg);
+        
+        // 创建标题
+        const titleLabel = new Laya.Text();
+        titleLabel.name = "titleLabel";
+        titleLabel.text = "加载中...";
+        titleLabel.fontSize = Math.max(24, Math.min(stageWidth * 0.06, 32));
+        titleLabel.color = "#ffffff";
+        titleLabel.width = stageWidth;
+        titleLabel.height = Math.max(40, stageHeight * 0.05);
+        titleLabel.align = "center";
+        titleLabel.valign = "middle";
+        titleLabel.pos(0, stageHeight * 0.3);
+        this.loadingPage.addChild(titleLabel);
+        
+        // 添加到舞台
+        Laya.stage.addChild(this.loadingPage);
+        
+        // 开始检查授权和加载流程
+        this.startLoadingProcess();
+    }
+    
+    /**
+     * 开始加载流程
+     */
+    private startLoadingProcess(): void {
+        console.log("开始加载流程");
+        
+        // 先检查授权状态
+        this.checkAuthAndLoad();
+    }
+    
+    /**
+     * 检查授权并加载
+     */
+    private checkAuthAndLoad(): void {
+        const wx = (window as any).wx;
+        
+        // 检查是否在微信小游戏环境中
+        if (!wx) {
+            console.log("不在微信小游戏环境中，使用默认用户ID");
+            this.userToken = "default_user";
+            GameDataManager.setUserId("default_user");
+            this.startGameLoading();
+            return;
+        }
+        
+        // 先尝试从本地存储加载token
+        GameDataManager.loadTokenFromStorage();
+        const savedToken = GameDataManager.getToken();
+        if (savedToken && savedToken !== "default_user") {
+            console.log("从本地存储加载token成功:", savedToken);
+            this.userToken = savedToken;
+            this.startGameLoading();
+            return;
+        }
+        
+        // 如果没有保存的token，进行微信登录
+        console.log("开始微信登录，获取自定义登录态token");
+        wx.login({
+            success: (res: any) => {
+                if (res.code) {
+                    console.log("获取登录凭证code成功:", res.code);
+                    // 将code发送到服务器，换取自定义登录态token
+                    GameDataManager.wxLogin(res.code, (token: string | null) => {
+                        if (token) {
+                            console.log("获取token成功:", token);
+                            this.userToken = token;
+                            
+                            if (Main.LOGIN_TEST_MODE) {
+                                // 登录测试模式：暂停后续流程
+                                console.log("========== 登录测试模式 ==========");
+                                console.log("登录成功，Token:", token);
+                                console.log("程序已暂停，不执行后续游戏加载流程");
+                                console.log("====================================");
+                            } else {
+                                // 正常模式：开始加载游戏
+                                this.startGameLoading();
+                            }
+                        } else {
+                            console.error("获取token失败，使用默认用户ID");
+                            this.userToken = "default_user";
+                            GameDataManager.setUserId("default_user");
+                            
+                            if (Main.LOGIN_TEST_MODE) {
+                                // 登录测试模式：暂停后续流程
+                                console.log("========== 登录测试模式 ==========");
+                                console.log("登录失败，使用默认用户ID");
+                                console.log("程序已暂停，不执行后续游戏加载流程");
+                                console.log("====================================");
+                            } else {
+                                // 正常模式：开始加载游戏
+                                this.startGameLoading();
+                            }
+                        }
+                    });
+                } else {
+                    console.error("获取登录凭证code失败:", res.errMsg);
+                    this.userToken = "default_user";
+                    GameDataManager.setUserId("default_user");
+                    
+                    if (Main.LOGIN_TEST_MODE) {
+                        // 登录测试模式：暂停后续流程
+                        console.log("========== 登录测试模式 ==========");
+                        console.log("获取登录凭证code失败");
+                        console.log("程序已暂停，不执行后续游戏加载流程");
+                        console.log("====================================");
+                    } else {
+                        // 正常模式：开始加载游戏
+                        this.startGameLoading();
+                    }
+                }
+            },
+            fail: (err: any) => {
+                console.error("微信登录失败:", err);
+                this.userToken = "default_user";
+                GameDataManager.setUserId("default_user");
+                
+                if (Main.LOGIN_TEST_MODE) {
+                    // 登录测试模式：暂停后续流程
+                    console.log("========== 登录测试模式 ==========");
+                    console.log("微信登录失败");
+                    console.log("程序已暂停，不执行后续游戏加载流程");
+                    console.log("====================================");
+                } else {
+                    // 正常模式：开始加载游戏
+                    this.startGameLoading();
+                }
+            }
+        });
+    }
+    
+    
+    /**
+     * 开始游戏加载（显示进度条）
+     */
+    private startGameLoading(): void {
+        console.log("开始游戏加载，用户Token:", this.userToken);
+        
+        // token已经在wxLogin中设置，这里不需要再次设置
+        
+        // 显示进度条
+        this.showProgressBar();
+        
+        // 开始加载游戏资源
+        this.loadGameResources();
+    }
+    
+    /**
+     * 显示进度条
+     */
+    private showProgressBar(): void {
+        const stageWidth = Laya.stage.width || 750;
+        const stageHeight = Laya.stage.height || 1334;
+        
+        // 更新标题
+        const titleLabel = this.loadingPage.getChildByName("titleLabel") as Laya.Text;
+        if (titleLabel) {
+            titleLabel.text = "加载中...";
+        }
+        
+        // 创建进度条背景
+        const progressBarWidth = Math.max(200, stageWidth * 0.6);
+        const progressBarHeight = Math.max(20, stageHeight * 0.03);
+        const progressBarX = (stageWidth - progressBarWidth) / 2;
+        const progressBarY = stageHeight * 0.5;
+        
+        this.progressBar = new Laya.Sprite();
+        this.progressBar.name = "progressBar";
+        this.progressBar.size(progressBarWidth, progressBarHeight);
+        this.progressBar.graphics.drawRect(0, 0, progressBarWidth, progressBarHeight, "#333333");
+        this.progressBar.pos(progressBarX, progressBarY);
+        this.loadingPage.addChild(this.progressBar);
+        
+        // 创建进度条填充
+        this.progressBarFill = new Laya.Sprite();
+        this.progressBarFill.name = "progressBarFill";
+        this.progressBarFill.size(0, progressBarHeight);
+        this.progressBarFill.graphics.drawRect(0, 0, progressBarWidth, progressBarHeight, "#00ff00");
+        this.progressBarFill.pos(progressBarX, progressBarY);
+        this.loadingPage.addChild(this.progressBarFill);
+        
+        // 创建进度文字
+        this.progressLabel = new Laya.Text();
+        this.progressLabel.name = "progressLabel";
+        this.progressLabel.text = "0%";
+        this.progressLabel.fontSize = Math.max(16, Math.min(stageWidth * 0.04, 20));
+        this.progressLabel.color = "#ffffff";
+        this.progressLabel.width = progressBarWidth;
+        this.progressLabel.height = Math.max(25, stageHeight * 0.03);
+        this.progressLabel.align = "center";
+        this.progressLabel.valign = "middle";
+        this.progressLabel.pos(progressBarX, progressBarY + progressBarHeight + 10);
+        this.loadingPage.addChild(this.progressLabel);
+    }
+    
+    /**
+     * 更新加载进度
+     */
+    private updateProgress(progress: number): void {
+        if (!this.progressBar || !this.progressBarFill) {
+            return;
+        }
+        
+        const progressBarWidth = this.progressBar.width;
+        const progressValue = Math.min(100, Math.max(0, progress));
+        
+        // 更新进度条填充宽度
+        this.progressBarFill.width = (progressBarWidth * progressValue) / 100;
+        
+        // 更新进度文字
+        if (this.progressLabel) {
+            this.progressLabel.text = Math.floor(progressValue) + "%";
+        }
+        
+        console.log("加载进度:", Math.floor(progressValue) + "%");
+    }
+    
+    /**
+     * 加载游戏资源
+     */
+    private loadGameResources(): void {
+        // 模拟加载步骤
+        let currentProgress = 0;
+        const totalSteps = 5; // 初始化数据、创建背景、创建UI、加载数据、完成
+        
+            // 步骤1: 初始化数据并预加载资源 (0-20%)
+            this.updateProgress(0);
+            Laya.timer.once(100, this, () => {
+                this.initAssistants();
+                this.initChallenges();
+                this.calculateMultiplier();
+                
+                // 预加载ticket、desk和背景图片（从服务器获取）
+                Laya.loader.load(this.getServerResourceUrl("resources/ticket.png"), null, null, Laya.Loader.IMAGE);
+                Laya.loader.load(this.getServerResourceUrl("resources/desk.png"), null, null, Laya.Loader.IMAGE);
+                Laya.loader.load(this.getServerResourceUrl("resources/back.png"), null, null, Laya.Loader.IMAGE);
+                
+                currentProgress = 20;
+                this.updateProgress(currentProgress);
+                
+                // 步骤2: 创建背景 (20-40%)
+                Laya.timer.once(100, this, () => {
+                    this.createBackground();
+                    this.createTicketContainer();
+                    currentProgress = 40;
+                    this.updateProgress(currentProgress);
+                
+                // 步骤3: 创建UI (40-60%)
+                Laya.timer.once(100, this, () => {
+                    this.createTopBar();
+                    this.createBottomButtons();
+                    this.createPopupContainer();
+                    this.setupClickHandler();
+                    currentProgress = 60;
+                    this.updateProgress(currentProgress);
+                    
+                    // 步骤4: 加载用户数据 (60-90%)
+                    Laya.timer.once(100, this, () => {
+                        this.updateProgress(60);
+                        this.loadGameData((success: boolean) => {
+                            if (success) {
+                                // 数据加载成功，继续加载流程
+                                currentProgress = 90;
+                                this.updateProgress(currentProgress);
+                                
+                                // 步骤5: 完成加载 (90-100%)
+                                Laya.timer.once(200, this, () => {
+                                    currentProgress = 100;
+                                    this.updateProgress(currentProgress);
+                                    
+                                    // 延迟一下再进入游戏
+                                    Laya.timer.once(300, this, () => {
+                                        this.enterGame();
+                                    });
+                                });
+                            } else {
+                                // 数据加载失败，显示错误信息并重试
+                                console.error("用户数据加载失败，将在3秒后重试...");
+                                this.updateProgress(60);
+                                
+                                // 更新标题显示错误信息
+                                if (this.progressLabel) {
+                                    this.progressLabel.text = "数据加载失败，正在重试...";
+                                }
+                                
+                                // 3秒后重试
+                                Laya.timer.once(3000, this, () => {
+                                    this.loadGameData((retrySuccess: boolean) => {
+                                        if (retrySuccess) {
+                                            // 重试成功，继续加载流程
+                                            currentProgress = 90;
+                                            this.updateProgress(currentProgress);
+                                            
+                                            Laya.timer.once(200, this, () => {
+                                                currentProgress = 100;
+                                                this.updateProgress(currentProgress);
+                                                
+                                                Laya.timer.once(300, this, () => {
+                                                    this.enterGame();
+                                                });
+                                            });
+                                        } else {
+                                            // 重试失败，使用默认数据进入游戏
+                                            console.warn("数据加载重试失败，使用默认数据进入游戏");
+                                            currentProgress = 90;
+                                            this.updateProgress(currentProgress);
+                                            
+                                            Laya.timer.once(200, this, () => {
+                                                currentProgress = 100;
+                                                this.updateProgress(currentProgress);
+                                                
+                                                Laya.timer.once(300, this, () => {
+                                                    this.enterGame();
+                                                });
+                                            });
+                                        }
+                                    });
+                                });
+                            }
+                        });
+                    });
+                });
+            });
+        });
+    }
+    
+    /**
+     * 进入游戏（隐藏加载页面，显示主游戏界面）
+     */
+    private enterGame(): void {
+        console.log("进入游戏主界面");
+        
+        // 启动助理收益定时器
+        this.startAssistantTimer();
+        
+        // 隐藏加载页面
+        if (this.loadingPage) {
+            Laya.Tween.to(this.loadingPage, { alpha: 0 }, 300, null, Laya.Handler.create(this, () => {
+                if (this.loadingPage) {
+                    this.loadingPage.removeSelf();
+                    this.loadingPage = null;
+                }
+                
+            }));
+        }
+    }
+    
     /**
      * 创建游戏界面
      */
@@ -92,6 +504,9 @@ export class Main extends Laya.Script {
         // 创建背景
         this.createBackground();
         
+        // 创建Ticket容器
+        this.createTicketContainer();
+        
         // 创建顶部玩家信息
         this.createTopBar();
         
@@ -106,6 +521,9 @@ export class Main extends Laya.Script {
         
         // 启动助理收益定时器（每秒执行一次）
         this.startAssistantTimer();
+        
+        // 加载用户数据（游戏启动时）
+        this.loadGameData();
     }
     
     /**
@@ -113,7 +531,7 @@ export class Main extends Laya.Script {
      */
     private initAssistants(): void {
         // 第一个助理解锁需要1000金币，后续每个助理解锁所需金币为前一个的10倍
-        const assistantNames = ["周训", "宝儿", "婉婷", "付嫣"]; // 根据图片中的助理名称
+        const assistantNames = ["1号", "2号", "3号", "4号", "5号", "6号", "7号", "8号", "9号", "10号"]; // 10个助理
         let unlockCost = 1000; // 第一个助理解锁费用
         
         for (let i = 0; i < assistantNames.length; i++) {
@@ -138,7 +556,7 @@ export class Main extends Laya.Script {
         this.challenges = [
             {
                 id: 1,
-                name: "手打柠檬茶",
+                name: "1号",
                 requiredPower: 500, // 点击收益500/次
                 reward: 50000, // 首次挑战成功奖励5.00万
                 completed: false,
@@ -146,7 +564,7 @@ export class Main extends Laya.Script {
             },
             {
                 id: 2,
-                name: "打歌水果捞",
+                name: "2号",
                 requiredPower: 3000, // 点击收益3000/次
                 reward: 200000, // 首次挑战成功奖励20.0万
                 completed: false,
@@ -154,7 +572,7 @@ export class Main extends Laya.Script {
             },
             {
                 id: 3,
-                name: "大声发特调",
+                name: "3号",
                 requiredPower: 60000, // 点击收益6.00万/次
                 reward: 3000000, // 首次挑战成功奖励300万
                 completed: false,
@@ -162,7 +580,7 @@ export class Main extends Laya.Script {
             },
             {
                 id: 4,
-                name: "铁牛牛肉面",
+                name: "4号",
                 requiredPower: 500000, // 点击收益50.0万/次
                 reward: 20000000, // 首次挑战成功奖励2000万
                 completed: false,
@@ -170,11 +588,51 @@ export class Main extends Laya.Script {
             },
             {
                 id: 5,
-                name: "蒜蓉羊头",
-                requiredPower: 1000000000000, // 点击收益1.00兆/次（1兆=1万亿）
-                reward: 100000000000000, // 首次挑战成功奖励100兆
+                name: "5号",
+                requiredPower: 5000000, // 点击收益500万/次
+                reward: 200000000, // 首次挑战成功奖励2.00亿
                 completed: false,
-                isBoss: true
+                isBoss: false
+            },
+            {
+                id: 6,
+                name: "6号",
+                requiredPower: 50000000, // 点击收益5000万/次
+                reward: 2000000000, // 首次挑战成功奖励20.0亿
+                completed: false,
+                isBoss: false
+            },
+            {
+                id: 7,
+                name: "7号",
+                requiredPower: 500000000, // 点击收益5.00亿/次
+                reward: 20000000000, // 首次挑战成功奖励200亿
+                completed: false,
+                isBoss: false
+            },
+            {
+                id: 8,
+                name: "8号",
+                requiredPower: 5000000000, // 点击收益50.0亿/次
+                reward: 200000000000, // 首次挑战成功奖励2000亿
+                completed: false,
+                isBoss: false
+            },
+            {
+                id: 9,
+                name: "9号",
+                requiredPower: 50000000000, // 点击收益500亿/次
+                reward: 2000000000000, // 首次挑战成功奖励2.00兆
+                completed: false,
+                isBoss: false
+            },
+            {
+                id: 10,
+                name: "10号",
+                requiredPower: 500000000000, // 点击收益5000亿/次
+                reward: 20000000000000, // 首次挑战成功奖励20.0兆
+                completed: false,
+                isBoss: false
             }
         ];
         
@@ -205,14 +663,17 @@ export class Main extends Laya.Script {
             }
         }
         
-        // 如果有收益，增加金币并更新显示
+        // 如果有收益，乘以培训倍率（2的n次方）后增加金币并更新显示
         if (totalEarnings > 0) {
-            this.money += totalEarnings;
+            const trainingMultiplier = Math.pow(2, this.trainingCount);
+            const finalEarnings = totalEarnings * trainingMultiplier;
+            this.money += finalEarnings;
             this.updateMoneyDisplay();
             this.updatePerSecondDisplay(); // 更新秒赚显示
             // 在金币下方显示收益弹窗
-            this.showPopup("+" + this.formatMoney(totalEarnings) + "/秒", "money", "#00ff00");
-            console.log("助理收益:", totalEarnings, "当前总金币:", this.money);
+            this.showPopup("+" + this.formatMoney(finalEarnings) + "/秒", "money", "#00ff00");
+            console.log("助理收益:", finalEarnings, "当前总金币:", this.money);
+            // 数据会通过定时保存自动保存，无需手动调用
         }
     }
 
@@ -220,28 +681,201 @@ export class Main extends Laya.Script {
      * 创建背景
      */
     private createBackground(): void {
-        // 创建渐变背景（模拟夜空）
+        // 创建背景Sprite
         const bg = new Laya.Sprite();
         bg.name = "background";
         const stageWidth = Laya.stage.width || 750;
         const stageHeight = Laya.stage.height || 1334;
-        bg.graphics.drawRect(0, 0, stageWidth, stageHeight, "#1a1a2e");
+        bg.size(stageWidth, stageHeight);
         
-        // 直接添加到stage
-        Laya.stage.addChild(bg);
-
-        // 添加一些星星装饰
-        for (let i = 0; i < 50; i++) {
-            const star = new Laya.Sprite();
-            star.name = "star_" + i;
-            const x = Math.random() * stageWidth;
-            const y = Math.random() * stageHeight * 0.6; // 只在上半部分
-            const size = Math.random() * 2 + 1;
-            star.graphics.drawCircle(0, 0, size, "#ffffff");
-            star.pos(x, y);
-            star.alpha = Math.random() * 0.8 + 0.2;
-            bg.addChild(star);
+        // 加载背景图片（从服务器获取）
+        const bgImagePath = this.getServerResourceUrl("resources/back.png");
+        const cachedTexture = Laya.loader.getRes(bgImagePath);
+        
+        if (cachedTexture) {
+            // 如果图片已加载，直接使用
+            bg.graphics.clear();
+            bg.graphics.drawTexture(cachedTexture, 0, 0, stageWidth, stageHeight);
+            Laya.stage.addChild(bg);
+            console.log("背景图片已加载，直接使用");
+        } else {
+            // 如果图片未加载，先加载再使用
+            Laya.loader.load(bgImagePath, Laya.Handler.create(this, (texture: Laya.Texture) => {
+                if (texture) {
+                    bg.graphics.clear();
+                    bg.graphics.drawTexture(texture, 0, 0, stageWidth, stageHeight);
+                    console.log("背景图片加载成功");
+                } else {
+                    // 如果加载失败，使用默认背景色
+                    bg.graphics.clear();
+                    bg.graphics.drawRect(0, 0, stageWidth, stageHeight, "#1a1a2e");
+                    console.log("背景图片加载失败，使用默认背景色");
+                }
+            }), null, Laya.Loader.IMAGE);
+            Laya.stage.addChild(bg);
         }
+    }
+
+    /**
+     * 创建Ticket容器（用于管理ticket动画，层级在背景上面，其他按钮下面）
+     */
+    private createTicketContainer(): void {
+        const ticketContainer = new Laya.Sprite();
+        ticketContainer.name = "ticketContainer";
+        const stageWidth = Laya.stage.width || 750;
+        const stageHeight = Laya.stage.height || 1334;
+        ticketContainer.size(stageWidth, stageHeight);
+        ticketContainer.pos(0, 0);
+        // 设置为不可点击，避免阻挡其他UI的点击事件
+        ticketContainer.mouseEnabled = false;
+        ticketContainer.mouseThrough = true;
+        // 添加到舞台，确保在背景之后、其他UI之前（通过addChild顺序控制层级）
+        Laya.stage.addChild(ticketContainer);
+        this.ticketContainer = ticketContainer;
+        
+        // 创建桌子（在ticket下方，保持不动）
+        this.createDesk();
+        
+        console.log("Ticket容器创建完成");
+    }
+
+    /**
+     * 创建桌子（居中显示，保持原始比例）
+     */
+    private createDesk(): void {
+        if (!this.ticketContainer) {
+            console.warn("Ticket容器未创建，无法创建桌子");
+            return;
+        }
+
+        const stageWidth = Laya.stage.width || 750;
+        const stageHeight = Laya.stage.height || 1334;
+        const deskImagePath = this.getServerResourceUrl("resources/desk.png");
+
+        // 创建桌子精灵
+        const deskSprite = new Laya.Sprite();
+        deskSprite.name = "deskSprite";
+        
+        // 加载桌子图片（从服务器获取）
+        Laya.loader.load(deskImagePath, Laya.Handler.create(this, (texture: Laya.Texture) => {
+            if (!texture) {
+                console.error("加载desk图片失败");
+                return;
+            }
+
+            // 设置图片
+            deskSprite.graphics.clear();
+            deskSprite.graphics.drawTexture(texture, 0, 0);
+            
+            // 使用图片原始尺寸
+            const deskWidth = texture.width;
+            const deskHeight = texture.height;
+            deskSprite.size(deskWidth, deskHeight);
+            
+            // 水平居中，垂直位置在屏幕下方（只显示上半部分）
+            const deskX = (stageWidth - deskWidth) / 2;
+            const deskY = stageHeight - deskHeight / 3; // 只显示一半，下半部分在屏幕外
+            deskSprite.pos(deskX, deskY);
+            
+            // 设置为不可点击
+            deskSprite.mouseEnabled = false;
+            deskSprite.mouseThrough = true;
+
+            // 添加到容器
+            this.ticketContainer.addChild(deskSprite);
+
+            console.log("桌子创建完成，位置:", deskX, deskY, "尺寸:", deskWidth, "x", deskHeight, "（只显示上半部分）");
+            
+            // 桌子创建完成后，更新助理after图片显示
+            Laya.timer.frameOnce(1, this, () => {
+                this.updateAssistantAfterImage();
+            });
+        }), null, Laya.Loader.IMAGE);
+    }
+
+    /**
+     * 显示Ticket滑动动画（从左滑到右消失）
+     */
+    private showTicketAnimation(): void {
+        if (!this.ticketContainer) {
+            console.warn("Ticket容器未创建，无法显示动画");
+            return;
+        }
+
+        const stageWidth = Laya.stage.width || 750;
+        const stageHeight = Laya.stage.height || 1334;
+        const ticketImagePath = this.getServerResourceUrl("resources/ticket.png");
+
+        // 创建ticket图片精灵
+        const ticketSprite = new Laya.Sprite();
+        ticketSprite.name = "ticketSprite_" + Date.now();
+        
+        // 尝试从缓存获取图片，如果没有则加载
+        const cachedTexture = Laya.loader.getRes(ticketImagePath);
+        if (cachedTexture) {
+            // 图片已缓存，直接使用
+            this.createTicketSprite(ticketSprite, cachedTexture, stageWidth, stageHeight);
+        } else {
+            // 图片未缓存，先加载（从服务器获取）
+            Laya.loader.load(ticketImagePath, Laya.Handler.create(this, (texture: Laya.Texture) => {
+                if (!texture) {
+                    console.error("加载ticket图片失败");
+                    return;
+                }
+                this.createTicketSprite(ticketSprite, texture, stageWidth, stageHeight);
+            }), null, Laya.Loader.IMAGE);
+        }
+    }
+
+    /**
+     * 创建并显示Ticket精灵动画（保持原始比例，居中显示）
+     * @param ticketSprite Ticket精灵
+     * @param texture 图片纹理
+     * @param stageWidth 舞台宽度
+     * @param stageHeight 舞台高度
+     */
+    private createTicketSprite(ticketSprite: Laya.Sprite, texture: Laya.Texture, stageWidth: number, stageHeight: number): void {
+        // 设置图片
+        ticketSprite.graphics.clear();
+        ticketSprite.graphics.drawTexture(texture, 0, 0);
+        
+        // 使用图片原始尺寸
+        const ticketWidth = texture.width;
+        const ticketHeight = texture.height;
+        ticketSprite.size(ticketWidth, ticketHeight);
+        
+        // 设置为不可点击
+        ticketSprite.mouseEnabled = false;
+        ticketSprite.mouseThrough = true;
+
+        // 初始位置：屏幕左侧外，垂直位置在屏幕下方（刚好显示）
+        const startX = -ticketWidth;
+        const startY = stageHeight - ticketHeight*1.3; // 刚好显示在屏幕下方
+        ticketSprite.pos(startX, startY);
+
+        // 添加到容器
+        this.ticketContainer.addChild(ticketSprite);
+
+        // 目标位置：屏幕右侧外，保持相同的Y坐标
+        const endX = stageWidth;
+        const endY = startY;
+
+        // 动画时长（毫秒）
+        const duration = 1000; // 1秒
+
+        // 使用Tween动画
+        Laya.Tween.to(ticketSprite, {
+            x: endX,
+            y: endY
+        }, duration, Laya.Ease.linearIn, Laya.Handler.create(this, () => {
+            // 动画完成后移除精灵
+            if (ticketSprite && ticketSprite.parent) {
+                ticketSprite.removeSelf();
+            }
+            console.log("Ticket动画完成并移除");
+        }));
+
+        console.log("Ticket动画开始，从左滑到右，尺寸:", ticketWidth, "x", ticketHeight);
     }
 
     /**
@@ -275,22 +909,15 @@ export class Main extends Laya.Script {
         avatarBg.pos(avatarX, avatarY);
         topBar.addChild(avatarBg);
 
-        // 玩家头像（加载自定义图片，如果图片不存在则使用默认颜色块）
+        // 玩家头像（优先使用用户头像URL，如果不存在则使用默认图片或颜色块）
         this.avatarImg = new Laya.Sprite();
         this.avatarImg.name = "avatarImg";
         const avatarInnerSize = avatarSize * 0.875; // 头像内部大小
         this.avatarImg.size(avatarInnerSize, avatarInnerSize);
-        // 尝试加载头像图片，路径：assets/resources/avatar.png
-        // 如果图片不存在，会使用默认颜色块
-        Laya.loader.load("resources/avatar.png", Laya.Handler.create(this, (texture: Laya.Texture) => {
-            if (texture) {
-                // 加载成功，使用图片
-                this.avatarImg.graphics.drawTexture(texture, 0, 0, avatarInnerSize, avatarInnerSize);
-            } else {
-                // 加载失败，使用默认颜色块
-                this.avatarImg.graphics.drawRect(0, 0, avatarInnerSize, avatarInnerSize, "#5a9");
-            }
-        }), null, null, 0, false, null, false);
+        
+        // 加载用户头像
+        this.loadUserAvatar(avatarInnerSize);
+        
         this.avatarImg.pos(avatarX + (avatarSize - avatarInnerSize) / 2, avatarY + (avatarSize - avatarInnerSize) / 2);
         this.avatarImg.mouseEnabled = true;
         this.avatarImg.mouseThrough = false;
@@ -307,13 +934,13 @@ export class Main extends Laya.Script {
         const fontSize = Math.max(16, Math.min(stageWidth * 0.04, 24)); // 字体大小：屏幕宽度4%，最小16，最大24
 
         // 玩家名称
-        const nameLabel = new Laya.Text();
-        nameLabel.name = "nameLabel";
-        nameLabel.text = "无名之辈";
-        nameLabel.fontSize = fontSize;
-        nameLabel.color = "#ffffff";
-        nameLabel.pos(nameX, nameY);
-        topBar.addChild(nameLabel);
+        this.nameLabel = new Laya.Text();
+        this.nameLabel.name = "nameLabel";
+        this.nameLabel.text = "无名之辈";
+        this.nameLabel.fontSize = fontSize;
+        this.nameLabel.color = "#ffffff";
+        this.nameLabel.pos(nameX, nameY);
+        topBar.addChild(this.nameLabel);
 
         // 等级标签
         this.levelLabel = new Laya.Text();
@@ -332,20 +959,15 @@ export class Main extends Laya.Script {
         // 往下移，避免和等级重合（等级在nameY + fontSize * 1.2，点击收益应该在等级下方）
         const multiplierY = nameY + fontSize * 1.2 + Math.max(25, fontSize * 1.5); // 等级下方，增加间距
         
-        this.multiplierLabelBg = new Laya.Sprite();
-        this.multiplierLabelBg.name = "multiplierLabelBg";
-        this.multiplierLabelBg.size(multiplierLabelBgWidth, multiplierLabelBgHeight);
-        this.multiplierLabelBg.graphics.drawRect(0, 0, multiplierLabelBgWidth, multiplierLabelBgHeight, "#000000");
-        this.multiplierLabelBg.alpha = 0.7;
-        this.multiplierLabelBg.pos(multiplierX, multiplierY);
-        topBar.addChild(this.multiplierLabelBg);
+        // 删除总收益背景，只保留文字
+        // this.multiplierLabelBg 已删除
         
         this.multiplierLabel = new Laya.Text();
         this.multiplierLabel.name = "multiplierLabel";
         // 初始显示总收益格式
         this.updateMultiplierDisplay();
         this.multiplierLabel.fontSize = fontSize;
-        this.multiplierLabel.color = "#00ff00";
+        this.multiplierLabel.color = "#ffd700"; // 金色
         this.multiplierLabel.width = multiplierLabelBgWidth;
         this.multiplierLabel.height = multiplierLabelBgHeight;
         this.multiplierLabel.align = "center";
@@ -358,19 +980,14 @@ export class Main extends Laya.Script {
         const perSecondLabelBgHeight = Math.max(20, fontSize * 1.2);
         const perSecondY = multiplierY + multiplierLabelBgHeight + Math.max(8, fontSize * 0.3); // 增加间距
         
-        this.perSecondLabelBg = new Laya.Sprite();
-        this.perSecondLabelBg.name = "perSecondLabelBg";
-        this.perSecondLabelBg.size(perSecondLabelBgWidth, perSecondLabelBgHeight);
-        this.perSecondLabelBg.graphics.drawRect(0, 0, perSecondLabelBgWidth, perSecondLabelBgHeight, "#000000");
-        this.perSecondLabelBg.alpha = 0.7;
-        this.perSecondLabelBg.pos(multiplierX, perSecondY);
-        topBar.addChild(this.perSecondLabelBg);
+        // 删除总秒赚背景，只保留文字
+        // this.perSecondLabelBg 已删除
         
         this.perSecondLabel = new Laya.Text();
         this.perSecondLabel.name = "perSecondLabel";
         this.updatePerSecondDisplay();
         this.perSecondLabel.fontSize = fontSize;
-        this.perSecondLabel.color = "#00aa00";
+        this.perSecondLabel.color = "#ffd700"; // 金色
         this.perSecondLabel.width = perSecondLabelBgWidth;
         this.perSecondLabel.height = perSecondLabelBgHeight;
         this.perSecondLabel.align = "center";
@@ -379,7 +996,7 @@ export class Main extends Laya.Script {
         topBar.addChild(this.perSecondLabel);
         
         // 金钱显示（在右侧）
-        const moneyX = stageWidth * 0.75; // 从屏幕75%位置开始（右侧）
+        const moneyX = stageWidth * 0.65; // 从屏幕65%位置开始（右侧）
         const moneyY = avatarY + (avatarSize - moneyIconSize) / 2;
 
         // 金钱图标（使用简单的矩形代替，可以替换为图片）
@@ -390,23 +1007,17 @@ export class Main extends Laya.Script {
         moneyIcon.pos(moneyX, moneyY);
         topBar.addChild(moneyIcon);
 
-        // 金钱文字背景
-        const moneyLabelBgWidth = Math.max(80, stageWidth * 0.2); // 背景宽度：屏幕20%，最小80
-        const moneyLabelBgHeight = Math.max(20, fontSize * 1.2);
-        this.moneyLabelBg = new Laya.Sprite();
-        this.moneyLabelBg.name = "moneyLabelBg";
-        this.moneyLabelBg.size(moneyLabelBgWidth, moneyLabelBgHeight);
-        this.moneyLabelBg.graphics.drawRect(0, 0, moneyLabelBgWidth, moneyLabelBgHeight, "#000000");
-        this.moneyLabelBg.alpha = 0.7;
-        this.moneyLabelBg.pos(moneyX + moneyIconSize + margin * 0.5, moneyY);
-        topBar.addChild(this.moneyLabelBg);
+        // 删除金钱文字背景，只保留文字
+        // this.moneyLabelBg 已删除
 
         // 金钱文字
+        const moneyLabelBgWidth = Math.max(80, stageWidth * 0.2); // 背景宽度：屏幕20%，最小80（用于计算位置）
+        const moneyLabelBgHeight = Math.max(20, fontSize * 1.2);
         this.moneyLabel = new Laya.Text();
         this.moneyLabel.name = "moneyLabel";
         this.moneyLabel.text = this.formatMoney(this.money);
         this.moneyLabel.fontSize = fontSize;
-        this.moneyLabel.color = "#ffd700";
+        this.moneyLabel.color = "#ffd700"; // 金色
         this.moneyLabel.width = moneyLabelBgWidth;
         this.moneyLabel.height = moneyLabelBgHeight;
         this.moneyLabel.align = "left";
@@ -438,8 +1049,8 @@ export class Main extends Laya.Script {
         const totalWidth = btnWidth * 3 + btnSpacing * 2;
         const startX = (stageWidth - totalWidth) / 2; // 居中排列
 
-        // 升级按钮（可以传入图片路径，如 "resources/btn_upgrade.png"）
-        this.upgradeBtn = this.createButton("#ff6b35", 0xff6b35, "resources/btn_upgrade.png", btnWidth, btnHeight, "升级");
+        // 升级按钮（从服务器获取图片）
+        this.upgradeBtn = this.createButton("#ff6b35", 0xff6b35, this.getServerResourceUrl("resources/btn_upgrade.png"), btnWidth, btnHeight, "升级");
         this.upgradeBtn.pos(startX, btnY);
         // 添加连点功能：按住时连续升级
         this.setupUpgradeRepeatButton(this.upgradeBtn);
@@ -475,14 +1086,14 @@ export class Main extends Laya.Script {
         // 初始化升级按钮颜色提示
         this.updateUpgradeCostDisplay();
 
-        // 助理按钮（可以传入图片路径，如 "resources/btn_assistant.png"）
-        this.assistantBtn = this.createButton("#ff6b9d", 0xff6b9d, "resources/btn_assistant.png", btnWidth, btnHeight, "助理");
+        // 助理按钮（从服务器获取图片）
+        this.assistantBtn = this.createButton("#ff6b9d", 0xff6b9d, this.getServerResourceUrl("resources/btn_assistant.png"), btnWidth, btnHeight, "助理");
         this.assistantBtn.pos(startX + btnWidth + btnSpacing, btnY);
         this.assistantBtn.on(Laya.Event.CLICK, this, this.onAssistantClick);
         bottomBar.addChild(this.assistantBtn);
 
-        // 挑战按钮（可以传入图片路径，如 "resources/btn_challenge.png"）
-        this.challengeBtn = this.createButton("#ff3333", 0xff3333, "resources/btn_challenge.png", btnWidth, btnHeight, "挑战");
+        // 挑战按钮（从服务器获取图片）
+        this.challengeBtn = this.createButton("#ff3333", 0xff3333, this.getServerResourceUrl("resources/btn_challenge.png"), btnWidth, btnHeight, "挑战");
         this.challengeBtn.pos(startX + (btnWidth + btnSpacing) * 2, btnY);
         this.challengeBtn.on(Laya.Event.CLICK, this, this.onChallengeClick);
         bottomBar.addChild(this.challengeBtn);
@@ -634,6 +1245,7 @@ export class Main extends Laya.Script {
             this.updateMultiplierDisplay();
             this.updatePerSecondDisplay();
             console.log("升级成功！当前等级:", this.playerLevel, "点击收益基础值:", this.clickRewardBase, "倍率:", this.clickMultiplier, "实际收益:", this.getClickReward(), "下次升级需要:", this.upgradeCost);
+            // 数据会通过定时保存自动保存，无需手动调用
         } else {
             // 金币不足，显示弹窗提示
             this.showPopup("金币不足！需要 " + this.formatMoney(this.upgradeCost), "center", "#ff6666");
@@ -705,7 +1317,7 @@ export class Main extends Laya.Script {
         // 创建标题
         const titleLabel = new Laya.Text();
         titleLabel.name = "titleLabel";
-        titleLabel.text = "美女助理";
+        titleLabel.text = "动物朋友";
         titleLabel.fontSize = Math.max(24, Math.min(stageWidth * 0.06, 32));
         titleLabel.color = "#ff6b9d";
         titleLabel.width = windowWidth;
@@ -716,42 +1328,141 @@ export class Main extends Laya.Script {
         titleLabel.mouseEnabled = false;
         this.assistantWindow.addChild(titleLabel);
         
-        // 创建助理总收益显示（左侧）
+        // 创建助理总收益显示（上方，居中）
         const totalEarningsLabel = new Laya.Text();
         totalEarningsLabel.name = "totalEarningsLabel";
         totalEarningsLabel.fontSize = Math.max(14, Math.min(stageWidth * 0.035, 18));
         totalEarningsLabel.color = "#00aa00";
-        totalEarningsLabel.width = windowWidth * 0.6; // 占60%宽度
+        totalEarningsLabel.width = windowWidth;
         totalEarningsLabel.height = Math.max(25, stageHeight * 0.03);
         totalEarningsLabel.align = "center";
         totalEarningsLabel.valign = "middle";
-        totalEarningsLabel.pos(windowX + windowWidth * 0.1, windowY + closeBtnMargin + Math.max(40, stageHeight * 0.05) + 5);
+        totalEarningsLabel.pos(windowX, windowY + closeBtnMargin + Math.max(40, stageHeight * 0.05) + 5);
         totalEarningsLabel.mouseEnabled = false;
         this.updateTotalEarningsLabel(totalEarningsLabel);
         this.assistantWindow.addChild(totalEarningsLabel);
         
-        // 创建总倍率显示（右侧，在总收益旁边）
+        // 创建总倍率显示（下方，在总收益下方）
         const totalMultiplierLabel = new Laya.Text();
         totalMultiplierLabel.name = "totalMultiplierLabel";
         totalMultiplierLabel.fontSize = Math.max(14, Math.min(stageWidth * 0.035, 18));
         totalMultiplierLabel.color = "#ffd700";
-        totalMultiplierLabel.width = windowWidth * 0.3; // 占30%宽度
+        totalMultiplierLabel.width = windowWidth;
         totalMultiplierLabel.height = Math.max(25, stageHeight * 0.03);
         totalMultiplierLabel.align = "center";
         totalMultiplierLabel.valign = "middle";
-        totalMultiplierLabel.pos(windowX + windowWidth * 0.7, windowY + closeBtnMargin + Math.max(40, stageHeight * 0.05) + 5);
+        totalMultiplierLabel.pos(windowX, windowY + closeBtnMargin + Math.max(40, stageHeight * 0.05) + Math.max(25, stageHeight * 0.03) + 10);
         totalMultiplierLabel.mouseEnabled = false;
         this.updateTotalMultiplierLabel(totalMultiplierLabel);
         this.assistantWindow.addChild(totalMultiplierLabel);
         
-        // 创建助理卡片容器
+        // 创建助理培训栏（棕色背景，高度为原来的两倍）
+        const baseTrainingBarHeight = Math.max(35, Math.min(stageHeight * 0.04, 45));
+        const trainingBarHeight = baseTrainingBarHeight * 2; // 高度变为两倍
+        const trainingBarY = windowY + closeBtnMargin + Math.max(40, stageHeight * 0.05) + Math.max(25, stageHeight * 0.03) * 2 + 15;
+        const trainingBar = new Laya.Sprite();
+        trainingBar.name = "trainingBar";
+        trainingBar.size(windowWidth, trainingBarHeight);
+        trainingBar.graphics.drawRect(0, 0, windowWidth, trainingBarHeight, "#8B4513"); // 棕色背景
+        trainingBar.pos(windowX, trainingBarY);
+        this.assistantWindow.addChild(trainingBar);
+        
+        // 左侧显示"基础收益 * (n+1)"（垂直居中）
+        const baseRewardLabel = new Laya.Text();
+        baseRewardLabel.name = "baseRewardLabel";
+        baseRewardLabel.fontSize = Math.max(14, Math.min(stageWidth * 0.035, 18));
+        baseRewardLabel.color = "#ffffff";
+        baseRewardLabel.width = windowWidth * 0.5;
+        baseRewardLabel.height = trainingBarHeight;
+        baseRewardLabel.align = "left";
+        baseRewardLabel.valign = "middle";
+        baseRewardLabel.pos(windowX + 10, trainingBarY);
+        baseRewardLabel.mouseEnabled = false;
+        this.updateBaseRewardLabel(baseRewardLabel);
+        this.assistantWindow.addChild(baseRewardLabel);
+        
+        // 右侧显示培训消耗金额（上方）
+        const trainingBtnWidth = Math.max(100, Math.min(windowWidth * 0.3, 150));
+        const trainingCostLabel = new Laya.Text();
+        trainingCostLabel.name = "trainingCostLabel";
+        trainingCostLabel.fontSize = Math.max(12, Math.min(stageWidth * 0.03, 16));
+        trainingCostLabel.color = "#ffd700";
+        trainingCostLabel.width = trainingBtnWidth;
+        trainingCostLabel.height = baseTrainingBarHeight;
+        trainingCostLabel.align = "right";
+        trainingCostLabel.valign = "middle";
+        trainingCostLabel.pos(windowX + windowWidth - trainingBtnWidth - 10, trainingBarY);
+        trainingCostLabel.mouseEnabled = false;
+        this.updateTrainingCostLabel(trainingCostLabel);
+        this.assistantWindow.addChild(trainingCostLabel);
+        
+        // 右侧显示"助理培训"按钮（下方）
+        const trainingBtnHeight = Math.max(28, baseTrainingBarHeight - 10);
+        const trainingBtn = new Laya.Sprite();
+        trainingBtn.name = "trainingBtn";
+        trainingBtn.size(trainingBtnWidth, trainingBtnHeight);
+        trainingBtn.graphics.drawRoundRect(0, 0, trainingBtnWidth, trainingBtnHeight, 5, 5, 5, 5, "#4a9eff");
+        trainingBtn.pos(windowX + windowWidth - trainingBtnWidth - 10, trainingBarY + baseTrainingBarHeight + (baseTrainingBarHeight - trainingBtnHeight) / 2);
+        trainingBtn.mouseEnabled = true;
+        trainingBtn.mouseThrough = false;
+        
+        // 按钮文字
+        const trainingBtnLabel = new Laya.Text();
+        trainingBtnLabel.text = "助理培训";
+        trainingBtnLabel.fontSize = Math.max(14, Math.min(stageWidth * 0.035, 18));
+        trainingBtnLabel.color = "#ffffff";
+        trainingBtnLabel.width = trainingBtnWidth;
+        trainingBtnLabel.height = trainingBtnHeight;
+        trainingBtnLabel.align = "center";
+        trainingBtnLabel.valign = "middle";
+        trainingBtnLabel.mouseEnabled = false;
+        trainingBtn.addChild(trainingBtnLabel);
+        
+        // 按钮交互效果
+        trainingBtn.on(Laya.Event.MOUSE_DOWN, this, () => {
+            trainingBtn.scale(0.95, 0.95);
+        });
+        trainingBtn.on(Laya.Event.MOUSE_UP, this, () => {
+            trainingBtn.scale(1, 1);
+        });
+        trainingBtn.on(Laya.Event.MOUSE_OUT, this, () => {
+            trainingBtn.scale(1, 1);
+        });
+        
+        // 按钮点击事件
+        trainingBtn.on(Laya.Event.CLICK, this, (e: Laya.Event) => {
+            e.stopPropagation();
+            this.handleTraining();
+        });
+        
+        this.assistantWindow.addChild(trainingBtn);
+        
+        // 计算卡片区域的可见区域
+        const headerHeight = closeBtnMargin + Math.max(40, stageHeight * 0.05) + Math.max(25, stageHeight * 0.03) * 2 + trainingBarHeight + 20; // 标题、统计信息和培训栏的高度
+        const cardsAreaY = windowY + headerHeight;
+        const cardsAreaHeight = windowHeight - headerHeight - 10; // 减去底部边距
+        
+        // 创建滚动遮罩容器（可见区域）
+        const scrollMask = new Laya.Sprite();
+        scrollMask.name = "scrollMask";
+        scrollMask.size(windowWidth, cardsAreaHeight);
+        scrollMask.pos(windowX, cardsAreaY);
+        scrollMask.mouseEnabled = true;
+        scrollMask.mouseThrough = false;
+        // 设置遮罩，用于裁剪超出区域的内容
+        scrollMask.scrollRect = new Laya.Rectangle(0, 0, windowWidth, cardsAreaHeight);
+        this.assistantWindow.addChild(scrollMask);
+        
+        // 创建助理卡片容器（内容区域，可以超出可见区域）
         const cardsContainer = new Laya.Sprite();
         cardsContainer.name = "cardsContainer";
-        cardsContainer.pos(windowX, windowY + closeBtnMargin + Math.max(40, stageHeight * 0.05) + Math.max(25, stageHeight * 0.03) + 15);
-        this.assistantWindow.addChild(cardsContainer);
+        cardsContainer.pos(0, 0); // 相对于遮罩容器的位置
+        cardsContainer.mouseEnabled = true;
+        cardsContainer.mouseThrough = false;
+        scrollMask.addChild(cardsContainer);
         
         // 创建助理卡片（2x2网格布局）
-        this.createAssistantCards(panel, cardsContainer, windowWidth, windowHeight);
+        this.createAssistantCards(panel, cardsContainer, windowWidth, cardsAreaHeight);
         
         console.log("创建助理窗口（手机端适配），位置:", windowX, windowY, "尺寸:", windowWidth, windowHeight);
     }
@@ -769,7 +1480,10 @@ export class Main extends Laya.Script {
         const cardSpacing = Math.max(10, stageWidth * 0.02); // 卡片间距
         const cardMargin = Math.max(10, stageWidth * 0.02); // 卡片边距
         const cardWidth = (windowWidth - cardMargin * 2 - cardSpacing) / cols;
-        const cardHeight = Math.max(150, Math.min((windowHeight * 0.5) / rows, 200)); // 卡片高度
+        // 卡片高度增加，以容纳图片（图片宽度等于卡片宽度）+ 原有内容
+        const imageHeight = cardWidth; // 图片高度等于卡片宽度（假设图片是正方形，如果不是可以调整）
+        const contentHeight = 150; // 原有内容区域高度
+        const cardHeight = imageHeight + contentHeight; // 总高度 = 图片高度 + 内容高度
         
         for (let i = 0; i < this.assistants.length; i++) {
             const assistant = this.assistants[i];
@@ -789,17 +1503,57 @@ export class Main extends Laya.Script {
             card.mouseThrough = false;
             container.addChild(card);
             
-            // 助理名称
+            // 助理图片（在名字上方，宽度等于卡片宽度）
+            const imageWidth = cardWidth; // 图片宽度等于卡片宽度
+            const imageHeight = cardWidth; // 图片高度等于卡片宽度（保持正方形，可根据实际图片调整）
+            const imageY = 0; // 图片从顶部开始
+            const imageSprite = new Laya.Sprite();
+            imageSprite.name = "assistantImage";
+            imageSprite.size(imageWidth, imageHeight);
+            imageSprite.pos(0, imageY);
+            imageSprite.mouseEnabled = false;
+            
+            // 根据解锁状态和助理ID显示不同图片，使用新的命名方式：{id}/egg.png 和 {id}/head.png（从服务器获取）
+            const imagePath = assistant.unlocked 
+                ? this.getServerResourceUrl(`resources/assist/${assistant.id}/head.png`)
+                : this.getServerResourceUrl(`resources/assist/${assistant.id}/egg.png`);
+            console.log("加载助理图片 - ID:", assistant.id, "解锁状态:", assistant.unlocked, "图片路径:", imagePath);
+            
+            const cachedTexture = Laya.loader.getRes(imagePath);
+            if (cachedTexture) {
+                imageSprite.graphics.clear();
+                imageSprite.graphics.drawTexture(cachedTexture, 0, 0, imageWidth, imageHeight);
+                console.log("使用缓存的图片资源:", imagePath);
+            } else {
+                Laya.loader.load(imagePath, Laya.Handler.create(this, (texture: Laya.Texture) => {
+                    if (texture && imageSprite && !imageSprite.destroyed) {
+                        imageSprite.graphics.clear();
+                        imageSprite.graphics.drawTexture(texture, 0, 0, imageWidth, imageHeight);
+                        console.log("动态加载图片成功:", imagePath);
+                    } else {
+                        // 如果图片加载失败，显示占位框
+                        imageSprite.graphics.clear();
+                        imageSprite.graphics.drawRect(0, 0, imageWidth, imageHeight, assistant.unlocked ? "#cccccc" : "#666666");
+                        console.log("图片加载失败或Sprite已销毁，使用占位框:", imagePath);
+                    }
+                }), null, Laya.Loader.IMAGE);
+                // 加载失败时显示占位框
+                imageSprite.graphics.drawRect(0, 0, imageWidth, imageHeight, assistant.unlocked ? "#cccccc" : "#666666");
+            }
+            
+            card.addChild(imageSprite);
+            
+            // 助理名称（位置下移，在图片下方）
             const nameLabel = new Laya.Text();
             nameLabel.name = "nameLabel";
             nameLabel.text = assistant.name;
             nameLabel.fontSize = Math.max(16, Math.min(stageWidth * 0.04, 20));
             nameLabel.color = assistant.unlocked ? "#333333" : "#888888";
             nameLabel.width = cardWidth;
-            nameLabel.height = Math.max(25, cardHeight * 0.15);
+            nameLabel.height = Math.max(25, contentHeight * 0.15);
             nameLabel.align = "center";
             nameLabel.valign = "middle";
-            nameLabel.pos(0, 5);
+            nameLabel.pos(0, imageY + imageHeight + 5); // 在图片下方
             nameLabel.mouseEnabled = false;
             card.addChild(nameLabel);
             
@@ -810,7 +1564,7 @@ export class Main extends Laya.Script {
             levelLabel.fontSize = Math.max(12, Math.min(stageWidth * 0.03, 16));
             levelLabel.color = assistant.unlocked ? "#ff6b35" : "#666666";
             levelLabel.width = cardWidth;
-            levelLabel.height = Math.max(20, cardHeight * 0.12);
+            levelLabel.height = Math.max(20, contentHeight * 0.12);
             levelLabel.align = "center";
             levelLabel.valign = "middle";
             levelLabel.pos(0, nameLabel.y + nameLabel.height);
@@ -829,7 +1583,7 @@ export class Main extends Laya.Script {
             earningsLabel.fontSize = Math.max(11, Math.min(stageWidth * 0.028, 14));
             earningsLabel.color = "#00aa00";
             earningsLabel.width = cardWidth; // 占满宽度
-            earningsLabel.height = Math.max(18, cardHeight * 0.1);
+            earningsLabel.height = Math.max(18, contentHeight * 0.1);
             earningsLabel.align = "center";
             earningsLabel.valign = "middle";
             earningsLabel.pos(0, levelLabel.y + levelLabel.height + 5);
@@ -872,7 +1626,7 @@ export class Main extends Laya.Script {
             costLabel.fontSize = Math.max(11, Math.min(stageWidth * 0.028, 14));
             costLabel.color = "#ff6b35";
             costLabel.width = cardWidth;
-            costLabel.height = Math.max(18, cardHeight * 0.1);
+            costLabel.height = Math.max(18, contentHeight * 0.1);
             costLabel.align = "center";
             costLabel.valign = "middle";
             costLabel.pos(0, earningsLabel.y + earningsLabel.height + 5);
@@ -883,7 +1637,7 @@ export class Main extends Laya.Script {
             const actionBtn = new Laya.Sprite();
             actionBtn.name = "actionBtn";
             const btnWidth = Math.max(60, cardWidth * 0.7);
-            const btnHeight = Math.max(30, cardHeight * 0.15);
+            const btnHeight = Math.max(30, contentHeight * 0.15);
             actionBtn.size(btnWidth, btnHeight);
             const btnColor = assistant.unlocked ? "#ff6b35" : "#00aa00";
             actionBtn.graphics.drawRoundRect(0, 0, btnWidth, btnHeight, 5, 5, 5, 5, btnColor);
@@ -939,6 +1693,61 @@ export class Main extends Laya.Script {
             
             card.addChild(actionBtn);
         }
+        
+        // 计算内容总高度
+        const totalContentHeight = rows * (cardHeight + cardSpacing) - cardSpacing + cardMargin * 2;
+        container.size(windowWidth, Math.max(totalContentHeight, windowHeight));
+        
+        // 如果内容高度超过可见区域，设置遮罩并启用滚动
+        if (totalContentHeight > windowHeight) {
+            // 找到遮罩容器
+            const scrollMask = container.parent as Laya.Sprite;
+            if (scrollMask && scrollMask.name === "scrollMask") {
+                // 设置遮罩的scrollRect，实现裁剪
+                scrollMask.scrollRect = new Laya.Rectangle(0, 0, windowWidth, windowHeight);
+                
+                // 添加触摸滚动功能（支持手机端）
+                let startY = 0;
+                let currentY = 0;
+                let isDragging = false;
+                
+                const onTouchStart = (e: Laya.Event) => {
+                    startY = e.stageY;
+                    currentY = container.y;
+                    isDragging = true;
+                    e.stopPropagation();
+                };
+                
+                const onTouchMove = (e: Laya.Event) => {
+                    if (isDragging) {
+                        const deltaY = e.stageY - startY;
+                        let newY = currentY + deltaY;
+                        
+                        // 限制滚动范围
+                        const maxScrollY = 0; // 顶部边界
+                        const minScrollY = windowHeight - totalContentHeight; // 底部边界
+                        newY = Math.max(minScrollY, Math.min(maxScrollY, newY));
+                        
+                        container.y = newY;
+                        e.stopPropagation();
+                    }
+                };
+                
+                const onTouchEnd = () => {
+                    isDragging = false;
+                };
+                
+                // 在scrollMask上监听按下事件
+                scrollMask.on(Laya.Event.MOUSE_DOWN, this, onTouchStart);
+                // 在stage上监听移动和抬起事件（确保即使鼠标移出也能响应）
+                Laya.stage.on(Laya.Event.MOUSE_MOVE, this, onTouchMove);
+                Laya.stage.on(Laya.Event.MOUSE_UP, this, onTouchEnd);
+                
+                console.log("启用助理列表滚动，内容高度:", totalContentHeight, "可见高度:", windowHeight);
+            }
+        } else {
+            console.log("助理列表内容未超出可见区域，无需滚动");
+        }
     }
     
     /**
@@ -982,6 +1791,11 @@ export class Main extends Laya.Script {
                 console.log("解锁助理:", assistant.name, "当前等级:", assistant.level);
                 // 刷新窗口
                 this.refreshAssistantWindow();
+                // 更新桌子上方的助理图片显示
+                this.updateAssistantAfterImage();
+                // 全屏显示after图片
+                this.showFullScreenAfterImage(assistant.id);
+                // 数据会通过定时保存自动保存，无需手动调用
             } else {
                 // 金币不足时，只显示简单提示
                 this.showPopup("金币不足！", "center", "#ff6666");
@@ -1000,14 +1814,24 @@ export class Main extends Laya.Script {
             
             if (this.money >= upgradeCost) {
                 this.money -= upgradeCost;
+                const previousLevel = assistant.level;
                 assistant.level++;
                 this.updateMoneyDisplay();
                 this.updateMultiplierDisplay(); // 更新倍率显示（如果达到20级会有加成）
                 this.updatePerSecondDisplay(); // 更新秒赚显示
-                this.showPopup("升级成功！", "center", "#00ff00");
+                // 删除升级成功弹窗
                 console.log("升级助理:", assistant.name, "当前等级:", assistant.level);
+                
+                // 如果正好升级到20级，显示after图片
+                if (assistant.level === 20 && previousLevel === 19) {
+                    // 计算倍率值：20% * 助理ID
+                    const multiplierValue = 20 * assistant.id;
+                    this.showFullScreenAfterImageWithText(assistant.id, `倍率提升${multiplierValue.toFixed(1)}%`);
+                }
+                
                 // 刷新窗口
                 this.refreshAssistantWindow();
+                // 数据会通过定时保存自动保存，无需手动调用
             } else {
                 // 金币不足时，只显示简单提示
                 this.showPopup("金币不足！", "center", "#ff6666");
@@ -1024,8 +1848,11 @@ export class Main extends Laya.Script {
             return;
         }
         
-        // 找到卡片容器
-        const cardsContainer = this.assistantWindow.getChildByName("cardsContainer") as Laya.Sprite;
+        // 找到滚动遮罩容器
+        const scrollMask = this.assistantWindow.getChildByName("scrollMask") as Laya.Sprite;
+        if (scrollMask) {
+            // 找到卡片容器（在scrollMask内部）
+            const cardsContainer = scrollMask.getChildByName("cardsContainer") as Laya.Sprite;
         if (cardsContainer) {
             cardsContainer.removeChildren();
             const windowPanel = this.assistantWindow.getChildByName("windowPanel") as Laya.Sprite;
@@ -1034,7 +1861,14 @@ export class Main extends Laya.Script {
                 const stageHeight = Laya.stage.height || 1334;
                 const windowWidth = windowPanel.width;
                 const windowHeight = windowPanel.height;
-                this.createAssistantCards(windowPanel, cardsContainer, windowWidth, windowHeight);
+                    // 计算卡片区域高度
+                    const closeBtnMargin = Math.min(10, stageWidth * 0.02);
+                    const baseTrainingBarHeight = Math.max(35, Math.min(stageHeight * 0.04, 45));
+                    const trainingBarHeight = baseTrainingBarHeight * 2; // 高度变为两倍
+                    const headerHeight = closeBtnMargin + Math.max(40, stageHeight * 0.05) + Math.max(25, stageHeight * 0.03) * 2 + trainingBarHeight + 20;
+                    const cardsAreaHeight = windowHeight - headerHeight - 10;
+                    this.createAssistantCards(windowPanel, cardsContainer, windowWidth, cardsAreaHeight);
+                }
             }
         }
         
@@ -1049,32 +1883,150 @@ export class Main extends Laya.Script {
         if (totalMultiplierLabel) {
             this.updateTotalMultiplierLabel(totalMultiplierLabel);
         }
+        
+        // 更新基础收益显示
+        const baseRewardLabel = this.assistantWindow.getChildByName("baseRewardLabel") as Laya.Text;
+        if (baseRewardLabel) {
+            this.updateBaseRewardLabel(baseRewardLabel);
+        }
+        
+        // 更新培训消耗显示
+        const trainingCostLabel = this.assistantWindow.getChildByName("trainingCostLabel") as Laya.Text;
+        if (trainingCostLabel) {
+            this.updateTrainingCostLabel(trainingCostLabel);
+        }
     }
     
     /**
      * 更新总收益显示
      */
     private updateTotalEarningsLabel(label: Laya.Text): void {
-        let totalEarnings = 0;
+        // 计算所有助理的基础秒赚
+        let baseEarnings = 0;
         for (const assistant of this.assistants) {
             if (assistant.unlocked && assistant.level > 0) {
-                totalEarnings += Math.floor(assistant.unlockCost * assistant.level / 100);
+                baseEarnings += Math.floor(assistant.unlockCost * assistant.level / 100);
             }
         }
-        label.text = "助理总秒赚: " + this.formatMoney(totalEarnings) + "/秒";
+        // 乘以培训倍率（2的n次方）
+        const trainingMultiplier = Math.pow(2, this.trainingCount);
+        const finalEarnings = baseEarnings * trainingMultiplier;
+        // 直接显示秒赚
+        label.text = "秒赚: " + this.formatMoney(finalEarnings) + "/秒";
     }
     
     /**
-     * 更新总倍率显示
+     * 更新助理总倍率显示
      */
     private updateTotalMultiplierLabel(label: Laya.Text): void {
-        this.calculateMultiplier(); // 重新计算倍率
-        // 计算总提升倍率（减去基础倍率1.0）
-        const totalBonus = (this.clickMultiplier - 1.0) * 100;
-        if (totalBonus > 0) {
-            label.text = "总倍率: +" + totalBonus.toFixed(0) + "%";
+        // 只计算助理部分的倍率加成
+        let assistantMultiplier = 0;
+        for (const assistant of this.assistants) {
+            if (assistant.unlocked && assistant.level >= 20) {
+                // 第n个助理（id为n）升到20级，增加20%*n的倍率
+                assistantMultiplier += 0.2 * assistant.id;
+            }
+        }
+        const assistantBonus = assistantMultiplier * 100;
+        if (assistantBonus > 0) {
+            label.text = "助理总倍率加成: +" + assistantBonus.toFixed(0) + "%";
         } else {
-            label.text = "总倍率: 0%";
+            label.text = "助理总倍率加成: 0%";
+        }
+    }
+    
+    /**
+     * 更新基础收益显示
+     */
+    private updateBaseRewardLabel(label: Laya.Text): void {
+        const multiplier = Math.pow(2, this.trainingCount); // 培训n次，基础收益是原来的2的n次方倍
+        label.text = "基础收益 * " + multiplier;
+    }
+    
+    /**
+     * 更新培训消耗显示
+     */
+    private updateTrainingCostLabel(label: Laya.Text): void {
+        // 检查是否解锁足够数量的助理
+        const unlockedCount = this.assistants.filter(a => a.unlocked).length;
+        const requiredCount = Main.TRAINING_REQUIRED_ASSISTANT_COUNT;
+        if (unlockedCount < requiredCount) {
+            label.text = `需解锁${requiredCount}位助理`;
+            return;
+        }
+        
+        // 计算培训消耗：第一次培训消耗为第8位助理的解锁金额，后续每次乘2
+        const targetAssistant = this.assistants.find(a => a.id === requiredCount);
+        if (!targetAssistant) {
+            label.text = "数据错误";
+            return;
+        }
+        const baseCost = targetAssistant.unlockCost; // 第一次培训消耗（第8位助理的解锁金额）
+        const trainingCost = baseCost * Math.pow(2, this.trainingCount); // 后续每次乘2
+        label.text = this.formatMoney(trainingCost);
+    }
+    
+    /**
+     * 处理助理培训
+     */
+    private handleTraining(): void {
+        // 检查是否解锁足够数量的助理
+        const unlockedCount = this.assistants.filter(a => a.unlocked).length;
+        const requiredCount = Main.TRAINING_REQUIRED_ASSISTANT_COUNT;
+        if (unlockedCount < requiredCount) {
+            // 弹窗提示，不要被窗口阻拦
+            this.showPopup(`需要解锁${requiredCount}位助理才能进行培训`, "center", "#ff6666");
+            console.log("培训失败：未解锁足够数量的助理，当前解锁数量:", unlockedCount, "需要:", requiredCount);
+            return;
+        }
+        
+        // 计算培训消耗：第一次培训消耗为第8位助理的解锁金额，后续每次乘2
+        const targetAssistant = this.assistants.find(a => a.id === requiredCount);
+        if (!targetAssistant) {
+            this.showPopup("数据错误，无法进行培训", "center", "#ff6666");
+            console.log("培训失败：找不到第", requiredCount, "位助理");
+            return;
+        }
+        const baseCost = targetAssistant.unlockCost; // 第一次培训消耗（第8位助理的解锁金额）
+        const trainingCost = baseCost * Math.pow(2, this.trainingCount); // 后续每次乘2
+        
+        // 检查金币是否足够
+        if (this.money < trainingCost) {
+            this.showPopup("金币不足！需要 " + this.formatMoney(trainingCost), "center", "#ff6666");
+            console.log("培训失败：金币不足，需要:", trainingCost, "当前:", this.money);
+            return;
+        }
+        
+        // 执行培训
+        this.money -= trainingCost;
+        this.trainingCount++;
+        this.updateMoneyDisplay();
+        this.updateMultiplierDisplay(); // 更新倍率显示（因为基础收益改变了）
+        this.updatePerSecondDisplay(); // 更新秒赚显示
+        
+        // 刷新助理窗口
+        this.refreshAssistantWindow();
+        
+        console.log("培训成功！培训次数:", this.trainingCount, "消耗:", trainingCost);
+    }
+    
+    /**
+     * 更新挑战总倍率显示
+     */
+    private updateChallengeTotalMultiplierLabel(label: Laya.Text): void {
+        // 只计算挑战部分的倍率加成
+        let challengeMultiplier = 0;
+        for (const challenge of this.challenges) {
+            if (challenge.completed) {
+                // 第n个挑战（id为n）完成，增加50%*n的倍率
+                challengeMultiplier += 0.5 * challenge.id;
+            }
+        }
+        const challengeBonus = challengeMultiplier * 100;
+        if (challengeBonus > 0) {
+            label.text = "挑战总倍率加成: +" + challengeBonus.toFixed(0) + "%";
+        } else {
+            label.text = "挑战总倍率加成: 0%";
         }
     }
     
@@ -1220,7 +2172,7 @@ export class Main extends Laya.Script {
         // 手机端适配：窗口宽度80%，高度60%
         const margin = 20;
         const windowWidth = Math.min(stageWidth * 0.8, stageWidth - margin * 2);
-        const windowHeight = Math.min(stageHeight * 0.6, stageHeight - margin * 2);
+        const windowHeight = Math.min(stageHeight * 0.8, stageHeight - margin * 2);
         
         // 使用通用窗口创建函数
         const { container, panel } = this.createCommonWindow(
@@ -1262,8 +2214,8 @@ export class Main extends Laya.Script {
         const settingsAvatar = new Laya.Sprite();
         settingsAvatar.name = "settingsAvatar";
         settingsAvatar.size(avatarSize, avatarSize);
-        // 使用和主界面相同的头像
-        Laya.loader.load("resources/avatar.png", Laya.Handler.create(this, (texture: Laya.Texture) => {
+        // 使用和主界面相同的头像（从服务器获取）
+        Laya.loader.load(this.getServerResourceUrl("resources/avatar.png"), Laya.Handler.create(this, (texture: Laya.Texture) => {
             if (texture) {
                 settingsAvatar.graphics.drawTexture(texture, 0, 0, avatarSize, avatarSize);
             } else {
@@ -1320,6 +2272,36 @@ export class Main extends Laya.Script {
         this.settingsWindow.addChild(perSecondText);
         currentY += itemFontSize * 1.5 + itemSpacing;
         
+        // 4.5. 基础本金/秒赚倍率显示
+        const baseEarningsMultiplierText = new Laya.Text();
+        baseEarningsMultiplierText.name = "baseEarningsMultiplierText";
+        baseEarningsMultiplierText.fontSize = itemFontSize;
+        baseEarningsMultiplierText.color = "#ffd700";
+        baseEarningsMultiplierText.width = windowWidth;
+        baseEarningsMultiplierText.height = itemFontSize * 1.5;
+        baseEarningsMultiplierText.align = "center";
+        baseEarningsMultiplierText.valign = "middle";
+        baseEarningsMultiplierText.pos(windowX, currentY);
+        baseEarningsMultiplierText.mouseEnabled = false;
+        this.updateSettingsBaseEarningsMultiplier(baseEarningsMultiplierText);
+        this.settingsWindow.addChild(baseEarningsMultiplierText);
+        currentY += itemFontSize * 1.5 + itemSpacing;
+        
+        // 4.6. 当前总倍率加成显示
+        const totalMultiplierText = new Laya.Text();
+        totalMultiplierText.name = "totalMultiplierText";
+        totalMultiplierText.fontSize = itemFontSize;
+        totalMultiplierText.color = "#ffd700";
+        totalMultiplierText.width = windowWidth;
+        totalMultiplierText.height = itemFontSize * 1.5;
+        totalMultiplierText.align = "center";
+        totalMultiplierText.valign = "middle";
+        totalMultiplierText.pos(windowX, currentY);
+        totalMultiplierText.mouseEnabled = false;
+        this.updateSettingsTotalMultiplier(totalMultiplierText);
+        this.settingsWindow.addChild(totalMultiplierText);
+        currentY += itemFontSize * 1.5 + itemSpacing;
+        
         // 5. 退出按钮
         const exitBtnWidth = Math.max(120, windowWidth * 0.5);
         const exitBtnHeight = Math.max(50, stageHeight * 0.06);
@@ -1369,21 +2351,50 @@ export class Main extends Laya.Script {
      * 更新设置窗口的点击收益显示
      */
     private updateSettingsClickReward(label: Laya.Text): void {
-        const totalBonus = (this.clickMultiplier - 1.0) * 100;
-        label.text = "点击收益: " + this.formatMoney(this.clickRewardBase) + "*(1+" + totalBonus.toFixed(0) + "%)";
+        // 直接显示最终值（乘以培训倍率后的值）
+        const finalReward = this.getClickReward();
+        label.text = "点击收益: " + this.formatMoney(finalReward);
     }
     
     /**
      * 更新设置窗口的秒赚显示
      */
     private updateSettingsPerSecond(label: Laya.Text): void {
-        let totalEarnings = 0;
+        // 计算所有助理的基础秒赚
+        let baseEarnings = 0;
         for (const assistant of this.assistants) {
             if (assistant.unlocked && assistant.level > 0) {
-                totalEarnings += Math.floor(assistant.unlockCost * assistant.level / 100);
+                baseEarnings += Math.floor(assistant.unlockCost * assistant.level / 100);
             }
         }
-        label.text = "秒赚: " + this.formatMoney(totalEarnings) + "/秒";
+        // 乘以培训倍率（2的n次方）
+        const trainingMultiplier = Math.pow(2, this.trainingCount);
+        const finalEarnings = baseEarnings * trainingMultiplier;
+        // 直接显示最终值
+        label.text = "秒赚: " + this.formatMoney(finalEarnings) + "/秒";
+    }
+    
+    /**
+     * 更新设置窗口的基础收益倍率显示
+     */
+    private updateSettingsBaseEarningsMultiplier(label: Laya.Text): void {
+        const displayMultiplier = this.trainingCount + 1;
+        label.text = "基础收益 * " + displayMultiplier;
+    }
+    
+    /**
+     * 更新设置窗口的当前总倍率加成显示
+     */
+    private updateSettingsTotalMultiplier(label: Laya.Text): void {
+        // 重新计算倍率（确保是最新的）
+        this.calculateMultiplier();
+        // 计算倍率加成百分比（减去基础倍率1.0）
+        const multiplierBonus = (this.clickMultiplier - 1.0) * 100;
+        if (multiplierBonus > 0) {
+            label.text = "当前总倍率加成: +" + multiplierBonus.toFixed(0) + "%";
+        } else {
+            label.text = "当前总倍率加成: 0%";
+        }
     }
     
     /**
@@ -1440,9 +2451,9 @@ export class Main extends Laya.Script {
         // 创建标题文字
         const titleLabel = new Laya.Text();
         titleLabel.name = "titleLabel";
-        titleLabel.text = "街头争霸";
+        titleLabel.text = "助理试炼";
         titleLabel.fontSize = Math.max(28, Math.min(stageWidth * 0.07, 36));
-        titleLabel.color = "#ffd700";
+        titleLabel.color = "#000000"; // 改为黑色，在金色/红色背景上更清晰
         titleLabel.width = windowWidth;
         titleLabel.height = titleBgHeight;
         titleLabel.align = "center";
@@ -1451,15 +2462,46 @@ export class Main extends Laya.Script {
         titleLabel.mouseEnabled = false;
         this.challengeWindow.addChild(titleLabel);
         
-        // 创建挑战列表容器
+        // 创建挑战总倍率显示（居中显示）
+        const totalMultiplierLabel = new Laya.Text();
+        totalMultiplierLabel.name = "challengeTotalMultiplierLabel";
+        totalMultiplierLabel.fontSize = Math.max(14, Math.min(stageWidth * 0.035, 18));
+        totalMultiplierLabel.color = "#ffd700";
+        totalMultiplierLabel.width = windowWidth;
+        totalMultiplierLabel.height = Math.max(25, stageHeight * 0.03);
+        totalMultiplierLabel.align = "center";
+        totalMultiplierLabel.valign = "middle";
+        totalMultiplierLabel.pos(windowX, windowY + closeBtnMargin + titleBgHeight + 5);
+        totalMultiplierLabel.mouseEnabled = false;
+        this.updateChallengeTotalMultiplierLabel(totalMultiplierLabel);
+        this.challengeWindow.addChild(totalMultiplierLabel);
+        
+        // 计算列表区域的可见区域
+        const headerHeight = closeBtnMargin + titleBgHeight + Math.max(25, stageHeight * 0.03) + 15; // 标题和统计信息的高度
+        const listAreaY = windowY + headerHeight;
+        const listAreaHeight = windowHeight - headerHeight - 10; // 减去底部边距
+        
+        // 创建滚动遮罩容器（可见区域）
+        const scrollMask = new Laya.Sprite();
+        scrollMask.name = "scrollMask";
+        scrollMask.size(windowWidth, listAreaHeight);
+        scrollMask.pos(windowX, listAreaY);
+        scrollMask.mouseEnabled = true;
+        scrollMask.mouseThrough = false;
+        // 设置遮罩，用于裁剪超出区域的内容
+        scrollMask.scrollRect = new Laya.Rectangle(0, 0, windowWidth, listAreaHeight);
+        this.challengeWindow.addChild(scrollMask);
+        
+        // 创建挑战列表容器（内容区域，可以超出可见区域）
         const listContainer = new Laya.Sprite();
         listContainer.name = "listContainer";
-        const listStartY = windowY + closeBtnMargin + titleBgHeight + 10;
-        listContainer.pos(windowX, listStartY);
-        this.challengeWindow.addChild(listContainer);
+        listContainer.pos(0, 0); // 相对于遮罩容器的位置
+        listContainer.mouseEnabled = true;
+        listContainer.mouseThrough = false;
+        scrollMask.addChild(listContainer);
         
         // 创建挑战列表项
-        this.createChallengeListItems(panel, listContainer, windowWidth, windowHeight - (listStartY - windowY) - 20);
+        this.createChallengeListItems(panel, listContainer, windowWidth, listAreaHeight);
         
         console.log("创建挑战窗口（手机端适配），位置:", windowX, windowY, "尺寸:", windowWidth, windowHeight);
     }
@@ -1472,7 +2514,7 @@ export class Main extends Laya.Script {
         const stageHeight = Laya.stage.height || 1334;
         
         // 每个挑战项的高度
-        const itemHeight = Math.max(100, Math.min(availableHeight / this.challenges.length, 120));
+        const itemHeight = 150;
         const itemSpacing = 8;
         const itemMargin = Math.max(10, stageWidth * 0.02);
         
@@ -1492,29 +2534,52 @@ export class Main extends Laya.Script {
             itemBg.mouseThrough = false;
             container.addChild(itemBg);
             
-            // 挑战头像（使用简单的圆形代替，可以替换为图片）
+            // 挑战头像（使用对应的助理头像）
             const avatarSize = Math.max(50, Math.min(itemHeight * 0.6, 70));
             const avatarX = 10;
             const avatarY = (itemHeight - avatarSize) / 2;
             
+            // 获取对应的助理信息
+            const assistant = this.assistants.find(a => a.id === challenge.id);
+            const assistantName = assistant ? assistant.name : "未知助理";
+            
             const avatar = new Laya.Sprite();
             avatar.name = "avatar";
             avatar.size(avatarSize, avatarSize);
-            if (this.isChallengeUnlocked(challenge.id)) {
-                // 已解锁：使用彩色
-                avatar.graphics.drawCircle(avatarSize / 2, avatarSize / 2, avatarSize / 2, "#4a9eff");
+            
+            // 根据解锁状态和助理ID显示不同图片（从服务器获取）
+            const imagePath = this.isChallengeUnlocked(challenge.id) 
+                ? this.getServerResourceUrl(`resources/assist/${challenge.id}/head.png`)
+                : this.getServerResourceUrl(`resources/assist/${challenge.id}/egg.png`);
+            
+            const cachedTexture = Laya.loader.getRes(imagePath);
+            if (cachedTexture) {
+                avatar.graphics.clear();
+                avatar.graphics.drawTexture(cachedTexture, 0, 0, avatarSize, avatarSize);
             } else {
-                // 未解锁：使用灰色
-                avatar.graphics.drawCircle(avatarSize / 2, avatarSize / 2, avatarSize / 2, "#888888");
+                // 如果图片未加载，使用占位图形
+                if (this.isChallengeUnlocked(challenge.id)) {
+                    avatar.graphics.drawCircle(avatarSize / 2, avatarSize / 2, avatarSize / 2, "#4a9eff");
+                } else {
+                    avatar.graphics.drawCircle(avatarSize / 2, avatarSize / 2, avatarSize / 2, "#888888");
+                }
+                // 尝试加载图片（从服务器获取）
+                Laya.loader.load(imagePath, Laya.Handler.create(this, (texture: Laya.Texture) => {
+                    if (texture && avatar && !avatar.destroyed) {
+                        avatar.graphics.clear();
+                        avatar.graphics.drawTexture(texture, 0, 0, avatarSize, avatarSize);
+                    }
+                }), null, Laya.Loader.IMAGE);
             }
+            
             avatar.pos(avatarX, avatarY);
             avatar.mouseEnabled = false;
             itemBg.addChild(avatar);
             
-            // 挑战名称
+            // 挑战名称（使用对应的助理名称）
             const nameLabel = new Laya.Text();
             nameLabel.name = "nameLabel";
-            nameLabel.text = challenge.name;
+            nameLabel.text = assistantName;
             nameLabel.fontSize = Math.max(16, Math.min(stageWidth * 0.04, 20));
             nameLabel.color = this.isChallengeUnlocked(challenge.id) ? "#333333" : "#888888";
             nameLabel.width = (windowWidth - itemMargin * 2) * 0.4;
@@ -1539,31 +2604,35 @@ export class Main extends Laya.Script {
             powerLabel.mouseEnabled = false;
             itemBg.addChild(powerLabel);
             
-            // 奖励显示（标注为首次挑战成功奖励）
+            // 奖励显示（标注为首次挑战成功奖励和倍率加成）
             const rewardLabel = new Laya.Text();
             rewardLabel.name = "rewardLabel";
-            rewardLabel.text = "首次挑战成功奖励: " + this.formatMoney(challenge.reward);
+            // 计算倍率加成值（第n个挑战50%*n）
+            const multiplierBonus = 0.5 * challenge.id;
+            rewardLabel.text = "首次挑战成功奖励: " + this.formatMoney(challenge.reward) + "\n倍率加成: +" + (multiplierBonus * 100).toFixed(0) + "%";
             rewardLabel.fontSize = Math.max(12, Math.min(stageWidth * 0.03, 16));
             rewardLabel.color = "#ffd700";
             rewardLabel.width = (windowWidth - itemMargin * 2) * 0.4;
-            rewardLabel.height = itemHeight * 0.2;
+            rewardLabel.height = itemHeight * 0.4; // 增加高度以容纳两行文字
             rewardLabel.align = "left";
-            rewardLabel.valign = "middle";
+            rewardLabel.valign = "top";
             rewardLabel.pos(avatarX + avatarSize + 10, itemHeight * 0.45 + 5);
             rewardLabel.mouseEnabled = false;
             itemBg.addChild(rewardLabel);
             
-            // 状态显示和按钮
-            const statusX = (windowWidth - itemMargin * 2) - 100;
-            const statusY = (itemHeight - 30) / 2;
+            // 状态显示和按钮（按钮放在下方，水平居中，增加间距避免挡住文字）
+            const btnWidth = 120;
+            const btnHeight = 30;
+            const btnX = ((windowWidth - itemMargin * 2) - btnWidth) / 2; // 水平居中
+            const btnY = itemHeight - btnHeight - 15; // 底部，留15像素边距，避免挡住上方文字
             
             if (this.isChallengeUnlocked(challenge.id)) {
                 // 已解锁：显示挑战按钮
                 const challengeBtn = new Laya.Sprite();
                 challengeBtn.name = "challengeBtn";
-                challengeBtn.size(90, 30);
-                challengeBtn.graphics.drawRoundRect(0, 0, 90, 30, 5, 5, 5, 5, "#ff6b35");
-                challengeBtn.pos(statusX, statusY);
+                challengeBtn.size(btnWidth, btnHeight);
+                challengeBtn.graphics.drawRoundRect(0, 0, btnWidth, btnHeight, 5, 5, 5, 5, "#ff6b35");
+                challengeBtn.pos(btnX, btnY);
                 challengeBtn.mouseEnabled = true;
                 challengeBtn.mouseThrough = false;
                 
@@ -1572,8 +2641,8 @@ export class Main extends Laya.Script {
                 btnLabel.text = "挑战";
                 btnLabel.fontSize = Math.max(14, Math.min(stageWidth * 0.035, 18));
                 btnLabel.color = "#ffffff";
-                btnLabel.width = 90;
-                btnLabel.height = 30;
+                btnLabel.width = btnWidth;
+                btnLabel.height = btnHeight;
                 btnLabel.align = "center";
                 btnLabel.valign = "middle";
                 btnLabel.mouseEnabled = false;
@@ -1598,32 +2667,35 @@ export class Main extends Laya.Script {
                 
                 itemBg.addChild(challengeBtn);
             } else {
-                // 未解锁：显示锁定状态
+                // 未解锁：显示锁定状态（放在下方，水平居中）
                 const lockLabel = new Laya.Text();
                 lockLabel.name = "lockLabel";
-                lockLabel.text = "完成前置挑战解锁";
+                // 显示需要解锁对应的助理
+                const assistant = this.assistants.find(a => a.id === challenge.id);
+                const assistantName = assistant ? assistant.name : "对应助理";
+                lockLabel.text = `需要先解锁${assistantName}`;
                 lockLabel.fontSize = Math.max(11, Math.min(stageWidth * 0.028, 14));
                 lockLabel.color = "#888888";
-                lockLabel.width = 100;
+                lockLabel.width = windowWidth - itemMargin * 2;
                 lockLabel.height = 30;
                 lockLabel.align = "center";
                 lockLabel.valign = "middle";
-                lockLabel.pos(statusX, statusY);
+                lockLabel.pos(0, itemHeight - 30 - 15); // 底部，留15像素边距，避免挡住上方文字
                 lockLabel.mouseEnabled = false;
                 itemBg.addChild(lockLabel);
                 
-                // 如果是BOSS挑战，显示VS图标和"挑战BOSS"文字
+                // 如果是BOSS挑战，显示VS图标和"挑战BOSS"文字（放在下方）
                 if (challenge.isBoss) {
                     const vsLabel = new Laya.Text();
                     vsLabel.name = "vsLabel";
                     vsLabel.text = "VS";
                     vsLabel.fontSize = Math.max(18, Math.min(stageWidth * 0.045, 24));
                     vsLabel.color = "#ff3333";
-                    vsLabel.width = 100;
+                    vsLabel.width = windowWidth - itemMargin * 2;
                     vsLabel.height = 20;
                     vsLabel.align = "center";
                     vsLabel.valign = "middle";
-                    vsLabel.pos(statusX, statusY - 15);
+                    vsLabel.pos(0, itemHeight - 60); // 在锁定文字上方，增加间距
                     vsLabel.mouseEnabled = false;
                     itemBg.addChild(vsLabel);
                     
@@ -1632,30 +2704,85 @@ export class Main extends Laya.Script {
                     bossLabel.text = "挑战BOSS";
                     bossLabel.fontSize = Math.max(10, Math.min(stageWidth * 0.025, 12));
                     bossLabel.color = "#ff3333";
-                    bossLabel.width = 100;
+                    bossLabel.width = windowWidth - itemMargin * 2;
                     bossLabel.height = 15;
                     bossLabel.align = "center";
                     bossLabel.valign = "middle";
-                    bossLabel.pos(statusX, statusY + 15);
+                    bossLabel.pos(0, itemHeight - 45); // 在锁定文字上方，增加间距
                     bossLabel.mouseEnabled = false;
                     itemBg.addChild(bossLabel);
                 }
             }
         }
+        
+        // 计算总内容高度
+        const totalContentHeight = this.challenges.length * (itemHeight + itemSpacing) - itemSpacing;
+        
+        // 如果内容高度超过可见区域，设置遮罩并启用滚动
+        if (totalContentHeight > availableHeight) {
+            // 找到遮罩容器
+            const scrollMask = container.parent as Laya.Sprite;
+            if (scrollMask && scrollMask.name === "scrollMask") {
+                // 设置遮罩的scrollRect，实现裁剪
+                scrollMask.scrollRect = new Laya.Rectangle(0, 0, windowWidth, availableHeight);
+                
+                // 添加触摸滚动功能（支持手机端）
+                let startY = 0;
+                let currentY = 0;
+                let isDragging = false;
+                
+                const onTouchStart = (e: Laya.Event) => {
+                    startY = e.stageY;
+                    currentY = container.y;
+                    isDragging = true;
+                    e.stopPropagation();
+                };
+                
+                const onTouchMove = (e: Laya.Event) => {
+                    if (isDragging) {
+                        const deltaY = e.stageY - startY;
+                        let newY = currentY + deltaY;
+                        
+                        // 限制滚动范围
+                        const maxScrollY = 0; // 顶部边界
+                        const minScrollY = availableHeight - totalContentHeight; // 底部边界
+                        newY = Math.max(minScrollY, Math.min(maxScrollY, newY));
+                        
+                        container.y = newY;
+                        e.stopPropagation();
+                    }
+                };
+                
+                const onTouchEnd = () => {
+                    isDragging = false;
+                };
+                
+                // 在scrollMask上监听按下事件
+                scrollMask.on(Laya.Event.MOUSE_DOWN, this, onTouchStart);
+                // 在stage上监听移动和抬起事件（确保即使鼠标移出也能响应）
+                Laya.stage.on(Laya.Event.MOUSE_MOVE, this, onTouchMove);
+                Laya.stage.on(Laya.Event.MOUSE_UP, this, onTouchEnd);
+                
+                console.log("启用挑战列表滚动，内容高度:", totalContentHeight, "可见高度:", availableHeight);
+            }
+        } else {
+            console.log("挑战列表内容未超出可见区域，无需滚动");
+        }
     }
     
     /**
      * 检查挑战是否已解锁
+     * 第n个挑战需要解锁第n个助理
      */
     private isChallengeUnlocked(challengeId: number): boolean {
-        // 第一个挑战总是解锁的
-        if (challengeId === 1) {
-            return true;
+        // 查找对应的助理
+        const assistant = this.assistants.find(a => a.id === challengeId);
+        if (!assistant) {
+            return false;
         }
         
-        // 其他挑战需要完成前一个挑战才能解锁
-        const prevChallenge = this.challenges.find(c => c.id === challengeId - 1);
-        return prevChallenge ? prevChallenge.completed : false;
+        // 挑战解锁条件：对应的助理已解锁
+        return assistant.unlocked;
     }
     
     /**
@@ -1668,9 +2795,12 @@ export class Main extends Laya.Script {
             return;
         }
         
-        // 检查是否已解锁
+        // 检查是否已解锁（需要对应的助理已解锁）
         if (!this.isChallengeUnlocked(challengeId)) {
-            this.showPopup("需要完成前置挑战解锁", "center", "#ff6666");
+            const assistant = this.assistants.find(a => a.id === challengeId);
+            const assistantName = assistant ? assistant.name : "对应助理";
+            this.showPopup(`需要先解锁${assistantName}才能挑战`, "center", "#ff6666");
+            console.log("挑战未解锁，需要先解锁对应的助理，挑战ID:", challengeId, "助理ID:", challengeId);
             return;
         }
         
@@ -1694,11 +2824,22 @@ export class Main extends Laya.Script {
         challenge.completed = true;
         this.money += challenge.reward;
         this.updateMoneyDisplay();
-        this.showPopup("挑战成功！获得 " + this.formatMoney(challenge.reward), "center", "#00ff00");
-        console.log("挑战成功:", challenge.name, "获得奖励:", challenge.reward);
+        
+        // 更新倍率（挑战完成会增加倍率加成）
+        this.calculateMultiplier();
+        this.updateMultiplierDisplay();
+        
+        // 计算倍率加成值（第n个挑战50%*n）
+        const multiplierBonus = 0.5 * challenge.id;
+        const multiplierBonusPercent = multiplierBonus * 100; // 转换为百分比
+        console.log("挑战成功:", challenge.name, "获得奖励:", challenge.reward, "倍率加成:", multiplierBonusPercent + "%");
+        
+        // 先播放视频，视频播放完成后再显示success图片（传入倍率值）
+        this.playChallengeSuccessVideo(challenge.id, multiplierBonusPercent);
         
         // 刷新挑战窗口
         this.refreshChallengeWindow();
+        // 数据会通过定时保存自动保存，无需手动调用
     }
     
     /**
@@ -1734,21 +2875,27 @@ export class Main extends Laya.Script {
             return;
         }
         
-        // 找到列表容器
-        const listContainer = this.challengeWindow.getChildByName("listContainer") as Laya.Sprite;
-        if (listContainer) {
-            listContainer.removeChildren();
-            const windowPanel = this.challengeWindow.getChildByName("windowPanel") as Laya.Sprite;
-            if (windowPanel) {
-                const stageWidth = Laya.stage.width || 750;
-                const stageHeight = Laya.stage.height || 1334;
-                const windowWidth = windowPanel.width;
-                const windowHeight = windowPanel.height;
-                const titleBg = this.challengeWindow.getChildByName("titleBg") as Laya.Sprite;
-                const closeBtnMargin = Math.min(10, stageWidth * 0.02);
-                const listStartY = closeBtnMargin + (titleBg ? titleBg.height : 50) + 10;
-                const availableHeight = windowHeight - listStartY - 20;
-                this.createChallengeListItems(windowPanel, listContainer, windowWidth, availableHeight);
+        // 更新总倍率显示
+        const totalMultiplierLabel = this.challengeWindow.getChildByName("challengeTotalMultiplierLabel") as Laya.Text;
+        if (totalMultiplierLabel) {
+            this.updateChallengeTotalMultiplierLabel(totalMultiplierLabel);
+        }
+        
+        // 找到滚动遮罩容器
+        const scrollMask = this.challengeWindow.getChildByName("scrollMask") as Laya.Sprite;
+        if (scrollMask) {
+            // 找到列表容器（在scrollMask内部）
+            const listContainer = scrollMask.getChildByName("listContainer") as Laya.Sprite;
+            if (listContainer) {
+                listContainer.removeChildren();
+                
+                const windowPanel = this.challengeWindow.getChildByName("windowPanel") as Laya.Sprite;
+                if (windowPanel) {
+                    const stageWidth = Laya.stage.width || 750;
+                    const windowWidth = windowPanel.width;
+                    const availableHeight = scrollMask.height; // 使用scrollMask的高度作为可见区域高度
+                    this.createChallengeListItems(windowPanel, listContainer, windowWidth, availableHeight);
+                }
             }
         }
     }
@@ -1830,7 +2977,18 @@ export class Main extends Laya.Script {
                 // 使用money位置类型，会自动计算位置，确保在屏幕上可见
                 this.showPopup("+" + this.formatMoney(this.getClickReward()), "money", "#00ff00");
                 
+                // 显示Ticket滑动动画（从左下方滑到右下方消失）
+                this.showTicketAnimation();
+                
+                // 更新点击收益计数，每10次切换一次助理图片
+                this.clickRewardCount++;
+                if (this.clickRewardCount >= 10) {
+                    this.clickRewardCount = 0;
+                    this.switchToNextAssistant();
+                }
+                
                 console.log("点击增加金钱:", this.getClickReward(), "当前金钱:", this.money);
+                // 数据会通过定时保存自动保存，无需手动调用
             }
         });
     }
@@ -1883,7 +3041,9 @@ export class Main extends Laya.Script {
      * 获取当前点击收益（基础值 * 倍率）
      */
     private getClickReward(): number {
-        return Math.floor(this.clickRewardBase * this.clickMultiplier);
+        // 培训n次，基础收益是原来的2的n次方倍，然后再乘以总倍率
+        const trainingMultiplier = Math.pow(2, this.trainingCount);
+        return Math.floor(this.clickRewardBase * trainingMultiplier * this.clickMultiplier);
     }
     
     /**
@@ -1900,6 +3060,14 @@ export class Main extends Laya.Script {
             }
         }
         
+        // 遍历所有挑战，如果已完成，增加50%*n的倍率
+        for (const challenge of this.challenges) {
+            if (challenge.completed) {
+                // 第n个挑战（id为n）完成，增加50%*n的倍率
+                totalMultiplier += 0.5 * challenge.id;
+            }
+        }
+        
         this.clickMultiplier = totalMultiplier;
     }
     
@@ -1909,9 +3077,9 @@ export class Main extends Laya.Script {
     private updateMultiplierDisplay(): void {
         if (this.multiplierLabel) {
             this.calculateMultiplier(); // 重新计算倍率
-            // 显示格式：点击收益：本金*(1+总倍率)
-            const totalBonus = (this.clickMultiplier - 1.0) * 100; // 总倍率提升部分
-            this.multiplierLabel.text = "点击收益: " + this.formatMoney(this.clickRewardBase) + "*(1+" + totalBonus.toFixed(0) + "%)";
+            // 直接显示最终值（乘以培训倍率后的值）
+            const finalReward = this.getClickReward();
+            this.multiplierLabel.text = "点击收益: " + this.formatMoney(finalReward);
         }
     }
     
@@ -1920,14 +3088,18 @@ export class Main extends Laya.Script {
      */
     private updatePerSecondDisplay(): void {
         if (this.perSecondLabel) {
-            // 计算所有助理的总秒赚
-            let totalEarnings = 0;
+            // 计算所有助理的基础秒赚
+            let baseEarnings = 0;
             for (const assistant of this.assistants) {
                 if (assistant.unlocked && assistant.level > 0) {
-                    totalEarnings += Math.floor(assistant.unlockCost * assistant.level / 100);
+                    baseEarnings += Math.floor(assistant.unlockCost * assistant.level / 100);
                 }
             }
-            this.perSecondLabel.text = "秒赚: " + this.formatMoney(totalEarnings) + "/秒";
+            // 乘以培训倍率（2的n次方）
+            const trainingMultiplier = Math.pow(2, this.trainingCount);
+            const finalEarnings = baseEarnings * trainingMultiplier;
+            // 直接显示最终值
+            this.perSecondLabel.text = "秒赚: " + this.formatMoney(finalEarnings) + "/秒";
         }
     }
     
@@ -1994,14 +3166,11 @@ export class Main extends Laya.Script {
     private updateMoneyDisplay(): void {
         if (this.moneyLabel) {
             this.moneyLabel.text = this.formatMoney(this.money);
-            // 更新背景宽度以适应文字（手机端适配）
-            if (this.moneyLabelBg) {
-                const stageWidth = Laya.stage.width || 750;
-                const textWidth = this.moneyLabel.textWidth || 80;
-                const minWidth = Math.max(80, stageWidth * 0.2); // 最小宽度：屏幕20%，最小80
-                this.moneyLabelBg.width = Math.max(textWidth + 10, minWidth);
-                this.moneyLabel.width = this.moneyLabelBg.width;
-            }
+            // 删除背景后，直接设置文字宽度
+            const stageWidth = Laya.stage.width || 750;
+            const textWidth = this.moneyLabel.textWidth || 80;
+            const minWidth = Math.max(80, stageWidth * 0.2); // 最小宽度：屏幕20%，最小80
+            this.moneyLabel.width = Math.max(textWidth + 10, minWidth);
         }
         // 同时更新升级按钮的颜色提示
         this.updateUpgradeCostDisplay();
@@ -2070,29 +3239,45 @@ export class Main extends Laya.Script {
         const popupHeight = Math.max(30, Math.min(stageHeight * 0.05, 50)); // 弹窗高度：屏幕5%，最小30，最大50
         const fontSize = Math.max(14, Math.min(stageWidth * 0.04, 22)); // 字体大小：屏幕4%，最小14，最大22
         
-        // 创建弹窗背景
-        const bg = new Laya.Sprite();
-        bg.name = "popupBg";
-        bg.size(popupWidth, popupHeight);
-        bg.graphics.drawRect(0, 0, popupWidth, popupHeight, "#000000");
-        bg.alpha = 0.8;
-        
-        // 创建弹窗文字
-        const label = new Laya.Text();
-        label.name = "popupLabel";
-        label.text = text;
-        label.fontSize = fontSize;
-        label.color = color;
-        label.width = popupWidth;
-        label.height = popupHeight;
-        label.align = "center";
-        label.valign = "middle";
-        
         // 创建弹窗容器
         const popup = new Laya.Sprite();
         popup.name = "popup";
-        popup.addChild(bg);
-        popup.addChild(label);
+        
+        // 如果是money位置的弹窗（收益弹窗），删除背景，文字改为深金色
+        if (position === "money") {
+            // 创建弹窗文字（无背景，深金色，适配白色背景）
+            const label = new Laya.Text();
+            label.name = "popupLabel";
+            label.text = text;
+            label.fontSize = fontSize;
+            label.color = "#b8860b"; // 深金色（DarkGoldenrod），适配白色背景
+            label.width = popupWidth;
+            label.height = popupHeight;
+            label.align = "center";
+            label.valign = "middle";
+            popup.addChild(label);
+        } else {
+            // 其他位置的弹窗保持原有样式（有背景）
+            const bg = new Laya.Sprite();
+            bg.name = "popupBg";
+            bg.size(popupWidth, popupHeight);
+            bg.graphics.drawRect(0, 0, popupWidth, popupHeight, "#000000");
+            bg.alpha = 0.8;
+            
+            // 创建弹窗文字
+            const label = new Laya.Text();
+            label.name = "popupLabel";
+            label.text = text;
+            label.fontSize = fontSize;
+            label.color = color;
+            label.width = popupWidth;
+            label.height = popupHeight;
+            label.align = "center";
+            label.valign = "middle";
+            
+            popup.addChild(bg);
+            popup.addChild(label);
+        }
         
         // 计算位置
         let x = 0;
@@ -2107,7 +3292,7 @@ export class Main extends Laya.Script {
         } else if (position === "money") {
             // 金币数下方，根据已有金币弹窗数量向下偏移
             const moneyPopupsCount = this.activePopups.filter(p => p.position === "money").length;
-            const moneyX = stageWidth * 0.75; // 金钱标签的X坐标（屏幕75%，右侧）
+            const moneyX = stageWidth * 0.65; // 金钱标签的X坐标（屏幕65%，右侧）
             const moneyIconSize = Math.max(16, Math.min(stageWidth * 0.04, 24));
             const margin = stageWidth * 0.03;
             const moneyLabelBgWidth = Math.max(80, stageWidth * 0.2);
@@ -2125,10 +3310,9 @@ export class Main extends Laya.Script {
             const maxY = stageHeight * 0.8;
             y = Math.min(calculatedY, maxY);
             
-            // X坐标：金币标签右侧，但确保弹窗不超出屏幕
-            const moneyLabelX = moneyX + moneyIconSize + margin * 0.5;
-            const maxX = stageWidth - popupWidth - 10; // 留10像素边距
-            x = Math.min(moneyLabelX, maxX);
+            // X坐标：靠右显示，在金币标签右侧，右对齐
+            const moneyLabelRightX = moneyX + moneyIconSize + margin * 0.5 + moneyLabelBgWidth; // 金币标签右边缘
+            x = stageWidth - popupWidth*0.8; // 屏幕右侧，留10像素边距
         }
         
         popup.pos(x, y);
@@ -2171,8 +3355,17 @@ export class Main extends Laya.Script {
         
         // 设置弹窗不阻挡点击（mouseEnabled设为false）
         popup.mouseEnabled = false;
-        bg.mouseEnabled = false;
-        label.mouseEnabled = false;
+        if (position !== "money") {
+            // money位置的弹窗没有背景，所以不需要设置bg
+            const bg = popup.getChildByName("popupBg") as Laya.Sprite;
+            if (bg) {
+                bg.mouseEnabled = false;
+            }
+        }
+        const label = popup.getChildByName("popupLabel") as Laya.Text;
+        if (label) {
+            label.mouseEnabled = false;
+        }
         
         // 1秒后移除弹窗
         const timerHandler = () => {
@@ -2233,11 +3426,1067 @@ export class Main extends Laya.Script {
      * @param amount 金钱数量
      */
     private formatMoney(amount: number): string {
-        if (amount >= 10000) {
-            // 有单位时保留小数点后两位
+        if (amount >= 1000000000000) {
+            // 1兆及以上，使用"兆"作为单位，保留小数点后两位
+            return (amount / 1000000000000).toFixed(2) + "兆";
+        } else if (amount >= 100000000) {
+            // 1亿及以上，使用"亿"作为单位，保留小数点后两位
+            return (amount / 100000000).toFixed(2) + "亿";
+        } else if (amount >= 10000) {
+            // 1万及以上，使用"万"作为单位，保留小数点后两位
             return (amount / 10000).toFixed(2) + "万";
         }
         // 没有单位时显示为整数
         return Math.floor(amount).toString();
+    }
+    
+    /**
+     * 加载游戏数据（游戏启动时调用）
+     * @param callback 加载完成后的回调函数，参数为是否加载成功
+     */
+    private loadGameData(callback?: (success: boolean) => void): void {
+        console.log("开始加载游戏数据...");
+        
+        // 更新UI显示用户昵称（使用默认值）
+        if (this.nameLabel) {
+            this.nameLabel.text = "无名之辈";
+        }
+        
+        // 更新进度提示
+        if (this.progressLabel) {
+            this.progressLabel.text = "正在加载用户数据...";
+        }
+        
+        // 加载用户数据
+        GameDataManager.loadUserData((data: any) => {
+            if (data) {
+                console.log("数据加载成功，开始恢复游戏状态");
+                // 恢复游戏数据
+                const playerInfo = GameDataManager.restoreGameData(data, this.assistants, this.challenges);
+                
+                if (playerInfo) {
+                    // 恢复玩家信息
+                    this.playerLevel = playerInfo.playerLevel || this.playerLevel;
+                    this.money = playerInfo.money || this.money;
+                    this.clickRewardBase = playerInfo.clickRewardBase || this.clickRewardBase;
+                    this.clickMultiplier = playerInfo.clickMultiplier || this.clickMultiplier;
+                    this.upgradeCost = playerInfo.upgradeCost || this.upgradeCost;
+                    this.trainingCount = playerInfo.trainingCount || this.trainingCount;
+                    
+                    // 更新显示
+                    if (this.levelLabel) {
+                        this.levelLabel.text = this.playerLevel + "级";
+                    }
+                    this.updateMoneyDisplay();
+                    this.updateUpgradeCostDisplay();
+                    this.updateMultiplierDisplay();
+                    this.updatePerSecondDisplay();
+                    
+                    // 更新助理after图片显示（延迟一帧确保桌子已创建）
+                    Laya.timer.frameOnce(1, this, () => {
+                        this.updateAssistantAfterImage();
+                    });
+                    
+                    console.log("游戏数据恢复完成");
+                } else {
+                    console.log("使用默认游戏数据");
+                }
+                
+                this.dataLoaded = true;
+                
+                // 数据加载完成后，启动定时保存（每秒保存一次）
+                this.startAutoSave();
+                
+                // 调用回调函数，传递成功标志
+                if (callback) {
+                    callback(true);
+                }
+            } else {
+                console.log("数据加载失败，使用默认数据");
+                this.dataLoaded = true;
+                
+                // 即使加载失败，也启动定时保存
+                this.startAutoSave();
+                
+                // 调用回调函数，传递失败标志
+                if (callback) {
+                    callback(false);
+                }
+            }
+        });
+    }
+    
+    /**
+     * 加载用户头像（使用默认头像）
+     * @param avatarSize 头像大小
+     */
+    private loadUserAvatar(avatarSize: number): void {
+        // 直接使用默认头像
+        console.log("加载默认头像");
+        this.loadDefaultAvatar(avatarSize);
+    }
+    
+    /**
+     * 加载默认头像
+     * @param avatarSize 头像大小
+     */
+    private loadDefaultAvatar(avatarSize: number): void {
+        // 尝试加载默认头像图片（从服务器获取）
+        // 如果图片不存在，会使用默认颜色块
+        Laya.loader.load(this.getServerResourceUrl("resources/avatar.png"), Laya.Handler.create(this, (texture: Laya.Texture) => {
+            if (texture) {
+                // 加载成功，使用图片
+                this.avatarImg.graphics.clear();
+                this.avatarImg.graphics.drawTexture(texture, 0, 0, avatarSize, avatarSize);
+            } else {
+                // 加载失败，使用默认颜色块
+                this.avatarImg.graphics.clear();
+                this.avatarImg.graphics.drawRect(0, 0, avatarSize, avatarSize, "#5a9");
+            }
+        }), null, null, 0, false, null, false);
+    }
+    
+    /**
+     * 启动定时保存
+     */
+    private startAutoSave(): void {
+        // 启动定时保存
+        // 注意：如需修改自动保存间隔，请直接修改 GameDataManager 中的 autoSaveInterval 变量，然后重启游戏
+        GameDataManager.startAutoSave(() => {
+            return this.getCurrentGameData();
+        });
+        console.log("定时保存已启动");
+    }
+    
+    /**
+     * 获取当前游戏数据（用于定时保存）
+     */
+    private getCurrentGameData(): any {
+        // 如果数据还未加载完成，返回null
+        if (!this.dataLoaded) {
+            return null;
+        }
+        
+        // 格式化游戏数据
+        return GameDataManager.formatGameData(
+            this.playerLevel,
+            this.money,
+            this.clickRewardBase,
+            this.clickMultiplier,
+            this.upgradeCost,
+            this.trainingCount,
+            this.assistants,
+            this.challenges
+        );
+    }
+    
+    /**
+     * 保存游戏数据（已废弃，改为定时保存）
+     * 保留此方法是为了兼容性，实际不再使用
+     */
+    private saveGameData(): void {
+        // 不再使用，数据会通过定时保存自动保存
+    }
+    
+    /**
+     * 更新桌子上方的助理图片显示（after或success）
+     */
+    private updateAssistantAfterImage(useAnimation: boolean = false): void {
+        // 获取所有已解锁的助理
+        const unlockedAssistants = this.assistants.filter(a => a.unlocked);
+        
+        if (unlockedAssistants.length === 0) {
+            // 没有解锁的助理，不显示图片
+            if (this.assistantAfterImage) {
+                // 如果有动画，先滑出再销毁
+                if (useAnimation && !this.isSwitchingAssistant) {
+                    this.isSwitchingAssistant = true;
+                    const stageWidth = Laya.stage.width || 750;
+                    Laya.Tween.to(this.assistantAfterImage, {
+                        x: -stageWidth
+                    }, 300, Laya.Ease.linearIn, Laya.Handler.create(this, () => {
+            if (this.assistantAfterImage) {
+                this.assistantAfterImage.destroy();
+                this.assistantAfterImage = null;
+                        }
+                        this.isSwitchingAssistant = false;
+                    }));
+                } else {
+                    this.assistantAfterImage.destroy();
+                    this.assistantAfterImage = null;
+                }
+            }
+            return;
+        }
+        
+        // 确保索引有效
+        if (this.currentAssistantIndex >= unlockedAssistants.length) {
+            this.currentAssistantIndex = 0;
+        }
+        
+        const currentAssistant = unlockedAssistants[this.currentAssistantIndex];
+        // 根据状态显示after或success图片
+        // 如果挑战未完成，强制显示after
+        let imageType = this.isShowingAfter ? "after" : "success";
+        if (imageType === "success" && !this.isChallengeCompleted(currentAssistant.id)) {
+            // 挑战未完成，强制显示after
+            imageType = "after";
+            this.isShowingAfter = true; // 同步状态
+            console.log("挑战未完成，强制显示after图片，助理ID:", currentAssistant.id);
+        }
+        const imagePath = this.getServerResourceUrl(`resources/assist/${currentAssistant.id}/${imageType}.png`);
+        
+        const stageWidth = Laya.stage.width || 750;
+        const stageHeight = Laya.stage.height || 1334;
+        
+        // 获取桌子位置
+        const deskSprite = this.ticketContainer?.getChildByName("deskSprite") as Laya.Sprite;
+        if (!deskSprite) {
+            console.warn("桌子Sprite不存在，无法定位助理图片");
+            return;
+        }
+        
+        // 计算目标位置（居中位置）
+        const calculateTargetPosition = (texture: Laya.Texture) => {
+            const imageWidth = texture.width || 200;
+            const imageHeight = texture.height || 200;
+            const scale = 1;
+            const displayWidth = imageWidth * scale;
+            const displayHeight = imageHeight * scale;
+            const centerX = (stageWidth - displayWidth) / 2;
+            const centerY = stageHeight - displayHeight;
+            return { displayWidth, displayHeight, centerX, centerY };
+        };
+        
+        // 显示新图片的函数
+        const showNewImage = (texture: Laya.Texture) => {
+            const { displayWidth, displayHeight, centerX, centerY } = calculateTargetPosition(texture);
+        
+            // 如果图片Sprite不存在，创建它
+            const isNewImage = !this.assistantAfterImage;
+            if (isNewImage) {
+                this.assistantAfterImage = new Laya.Sprite();
+                this.assistantAfterImage.name = "assistantAfterImage";
+                this.assistantAfterImage.mouseEnabled = false;
+                this.assistantAfterImage.mouseThrough = true;
+                
+                // 添加到ticketContainer（桌子所在的容器）
+                if (this.ticketContainer) {
+                    this.ticketContainer.addChild(this.assistantAfterImage);
+                }
+            }
+            
+            // 如果是切换且有旧图片，执行滑动动画（不改变旧图片内容）
+            if (useAnimation && !isNewImage) {
+                // 停止之前的动画
+                Laya.Tween.clearAll(this.assistantAfterImage);
+                this.isSwitchingAssistant = true;
+                
+                // 先让旧图片向左滑出（保持旧图片内容不变）
+                Laya.Tween.to(this.assistantAfterImage, {
+                    x: -stageWidth
+                }, 300, Laya.Ease.linearIn, Laya.Handler.create(this, () => {
+                    // 旧图片滑出后，更新为新图片并从右边滑入
+                    this.assistantAfterImage.graphics.clear();
+                    this.assistantAfterImage.graphics.drawTexture(texture, 0, 0, displayWidth, displayHeight);
+                    this.assistantAfterImage.size(displayWidth, displayHeight);
+                    
+                    // 新图片从右边开始
+                    this.assistantAfterImage.pos(stageWidth, centerY);
+                    
+                    // 将助理图片移到桌子后面（降低z-index，index越小越靠后）
+                    if (this.ticketContainer) {
+                        const deskIndex = this.ticketContainer.getChildIndex(deskSprite);
+                        this.ticketContainer.setChildIndex(this.assistantAfterImage, Math.max(0, deskIndex - 1));
+                    }
+                    
+                    // 滑入到中间
+                    Laya.Tween.to(this.assistantAfterImage, {
+                        x: centerX
+                    }, 300, Laya.Ease.linearOut, Laya.Handler.create(this, () => {
+                        this.isSwitchingAssistant = false;
+                        console.log("助理图片切换动画完成 - 助理ID:", currentAssistant.id, "图片类型:", imageType);
+                    }));
+                }));
+            } else {
+                // 首次创建或不需要动画，直接显示
+                // 停止之前的动画
+                if (this.assistantAfterImage) {
+                    Laya.Tween.clearAll(this.assistantAfterImage);
+                }
+                
+                // 绘制图片
+                this.assistantAfterImage.graphics.clear();
+                this.assistantAfterImage.graphics.drawTexture(texture, 0, 0, displayWidth, displayHeight);
+                this.assistantAfterImage.size(displayWidth, displayHeight);
+                this.assistantAfterImage.pos(centerX, centerY);
+                
+                // 将助理图片移到桌子后面（降低z-index，index越小越靠后）
+                if (this.ticketContainer) {
+                    const deskIndex = this.ticketContainer.getChildIndex(deskSprite);
+                    this.ticketContainer.setChildIndex(this.assistantAfterImage, Math.max(0, deskIndex - 1));
+                }
+                
+                if (isNewImage) {
+                    console.log("创建助理图片 - 助理ID:", currentAssistant.id, "图片类型:", imageType);
+                } else {
+                    console.log("更新助理图片 - 助理ID:", currentAssistant.id, "图片类型:", imageType);
+                }
+            }
+        };
+        
+        // 加载图片
+        const cachedTexture = Laya.loader.getRes(imagePath);
+        if (cachedTexture) {
+            showNewImage(cachedTexture);
+        } else {
+            // 动态加载图片
+            Laya.loader.load(imagePath, Laya.Handler.create(this, (texture: Laya.Texture) => {
+                if (texture) {
+                    showNewImage(texture);
+                } else {
+                    console.log("图片加载失败:", imagePath);
+                }
+            }), null, Laya.Loader.IMAGE);
+        }
+    }
+    
+    /**
+     * 检查助理对应的挑战是否完成
+     * @param assistantId 助理ID
+     * @returns 如果挑战完成返回true，否则返回false
+     */
+    private isChallengeCompleted(assistantId: number): boolean {
+        const challenge = this.challenges.find(c => c.id === assistantId);
+        return challenge ? challenge.completed : false;
+    }
+    
+    /**
+     * 切换到下一个助理图片（after→success→下一个助理的after→success...循环）
+     * 如果助理对应的挑战未完成，跳过success图片
+     */
+    private switchToNextAssistant(): void {
+        const unlockedAssistants = this.assistants.filter(a => a.unlocked);
+        
+        if (unlockedAssistants.length === 0) {
+            // 没有解锁的助理，不显示图片
+            if (this.assistantAfterImage) {
+                this.assistantAfterImage.destroy();
+                this.assistantAfterImage = null;
+            }
+            return;
+        }
+        
+        // 如果当前显示的是after，尝试切换到success
+        if (this.isShowingAfter) {
+            const currentAssistant = unlockedAssistants[this.currentAssistantIndex];
+            // 检查当前助理对应的挑战是否完成
+            if (this.isChallengeCompleted(currentAssistant.id)) {
+                // 挑战已完成，可以显示success
+                this.isShowingAfter = false;
+                console.log("切换到success图片，当前助理ID:", currentAssistant.id);
+            } else {
+                // 挑战未完成，跳过success，直接切换到下一个助理的after
+                this.isShowingAfter = true;
+                this.currentAssistantIndex = (this.currentAssistantIndex + 1) % unlockedAssistants.length;
+                const nextAssistant = unlockedAssistants[this.currentAssistantIndex];
+                console.log("挑战未完成，跳过success，切换到下一个助理的after图片，助理ID:", nextAssistant.id);
+            }
+        } else {
+            // 如果当前显示的是success，切换到下一个助理的after
+            this.isShowingAfter = true;
+            this.currentAssistantIndex = (this.currentAssistantIndex + 1) % unlockedAssistants.length;
+            console.log("切换到下一个助理的after图片，当前索引:", this.currentAssistantIndex, "助理ID:", unlockedAssistants[this.currentAssistantIndex].id);
+        }
+        
+        // 更新图片显示（使用动画）
+        this.updateAssistantAfterImage(true);
+    }
+    
+    /**
+     * 全屏显示助理after图片（解锁时显示）
+     * @param assistantId 助理ID
+     */
+    private showFullScreenAfterImage(assistantId: number): void {
+        // 如果已有全屏图片正在显示，先移除
+        if (this.fullScreenAfterImage) {
+            // 停止所有Tween动画
+            Laya.Tween.clearAll(this.fullScreenAfterImage);
+            // 移除事件监听
+            this.fullScreenAfterImage.off(Laya.Event.CLICK, this, this.hideFullScreenAfterImage);
+            this.fullScreenAfterImage.destroy();
+            this.fullScreenAfterImage = null;
+        }
+        
+        // 清理文本对象
+        if (this.fullScreenAssistantNameLabel) {
+            this.fullScreenAssistantNameLabel.destroy();
+            this.fullScreenAssistantNameLabel = null;
+        }
+        if (this.fullScreenContinueLabel) {
+            this.fullScreenContinueLabel.destroy();
+            this.fullScreenContinueLabel = null;
+        }
+        // 清理黑色遮挡
+        if (this.fullScreenBottomMask) {
+            this.fullScreenBottomMask.destroy();
+            this.fullScreenBottomMask = null;
+        }
+        
+        // 查找助理名字
+        const assistant = this.assistants.find(a => a.id === assistantId);
+        const assistantName = assistant ? assistant.name : "未知助理";
+        
+        const stageWidth = Laya.stage.width || 750;
+        const stageHeight = Laya.stage.height || 1334;
+        const imagePath = this.getServerResourceUrl(`resources/assist/${assistantId}/after.png`);
+        
+        // 创建全屏显示的Sprite
+        this.fullScreenAfterImage = new Laya.Sprite();
+        this.fullScreenAfterImage.name = "fullScreenAfterImage";
+        this.fullScreenAfterImage.size(stageWidth, stageHeight);
+        this.fullScreenAfterImage.mouseEnabled = false; // 初始不可点击，1秒后启用
+        this.fullScreenAfterImage.mouseThrough = false; // 需要响应点击事件
+        
+        // 添加到stage的最上层，确保不被其他UI阻拦
+        Laya.stage.addChild(this.fullScreenAfterImage);
+        // 设置到最上层
+        Laya.stage.setChildIndex(this.fullScreenAfterImage, Laya.stage.numChildren - 1);
+        
+        // 加载图片（从服务器获取）
+        const cachedTexture = Laya.loader.getRes(imagePath);
+        if (cachedTexture) {
+            // 使用缓存的图片
+            this.displayFullScreenImage(cachedTexture, stageWidth, stageHeight, assistantId, assistantName);
+            console.log("全屏显示助理after图片 - 助理ID:", assistantId, "使用缓存图片");
+        } else {
+            // 动态加载图片（从服务器获取）
+            Laya.loader.load(imagePath, Laya.Handler.create(this, (texture: Laya.Texture) => {
+                if (texture && this.fullScreenAfterImage && !this.fullScreenAfterImage.destroyed) {
+                    this.displayFullScreenImage(texture, stageWidth, stageHeight, assistantId, assistantName);
+                    console.log("全屏显示助理after图片 - 助理ID:", assistantId, "动态加载图片成功");
+                } else {
+                    console.log("全屏显示图片加载失败:", imagePath);
+                    // 加载失败也要清理
+                    if (this.fullScreenAfterImage) {
+                        this.fullScreenAfterImage.destroy();
+                        this.fullScreenAfterImage = null;
+                    }
+                }
+            }), null, Laya.Loader.IMAGE);
+        }
+    }
+    
+    /**
+     * 全屏显示助理after图片（带自定义文字，用于20级升级）
+     * @param assistantId 助理ID
+     * @param customText 自定义文字（显示在图片上方）
+     */
+    private showFullScreenAfterImageWithText(assistantId: number, customText: string): void {
+        // 如果已有全屏图片正在显示，先移除
+        if (this.fullScreenAfterImage) {
+            // 停止所有Tween动画
+            Laya.Tween.clearAll(this.fullScreenAfterImage);
+            // 移除事件监听
+            this.fullScreenAfterImage.off(Laya.Event.CLICK, this, this.hideFullScreenAfterImage);
+            this.fullScreenAfterImage.destroy();
+            this.fullScreenAfterImage = null;
+        }
+        
+        // 清理文本对象
+        if (this.fullScreenAssistantNameLabel) {
+            this.fullScreenAssistantNameLabel.destroy();
+            this.fullScreenAssistantNameLabel = null;
+        }
+        if (this.fullScreenContinueLabel) {
+            this.fullScreenContinueLabel.destroy();
+            this.fullScreenContinueLabel = null;
+        }
+        // 清理黑色遮挡
+        if (this.fullScreenBottomMask) {
+            this.fullScreenBottomMask.destroy();
+            this.fullScreenBottomMask = null;
+        }
+        
+        const stageWidth = Laya.stage.width || 750;
+        const stageHeight = Laya.stage.height || 1334;
+        const imagePath = this.getServerResourceUrl(`resources/assist/${assistantId}/after.png`);
+        
+        // 创建全屏显示的Sprite
+        this.fullScreenAfterImage = new Laya.Sprite();
+        this.fullScreenAfterImage.name = "fullScreenAfterImage";
+        this.fullScreenAfterImage.size(stageWidth, stageHeight);
+        this.fullScreenAfterImage.mouseEnabled = false; // 初始不可点击，1秒后启用
+        this.fullScreenAfterImage.mouseThrough = false; // 需要响应点击事件
+        
+        // 添加到stage的最上层，确保不被其他UI阻拦
+        Laya.stage.addChild(this.fullScreenAfterImage);
+        // 设置到最上层
+        Laya.stage.setChildIndex(this.fullScreenAfterImage, Laya.stage.numChildren - 1);
+        
+        // 加载图片（从服务器获取）
+        const cachedTexture = Laya.loader.getRes(imagePath);
+        if (cachedTexture) {
+            // 使用缓存的图片
+            this.displayFullScreenImageWithText(cachedTexture, stageWidth, stageHeight, customText);
+            console.log("全屏显示助理after图片（20级升级） - 助理ID:", assistantId, "使用缓存图片");
+        } else {
+            // 动态加载图片（从服务器获取）
+            Laya.loader.load(imagePath, Laya.Handler.create(this, (texture: Laya.Texture) => {
+                if (texture && this.fullScreenAfterImage && !this.fullScreenAfterImage.destroyed) {
+                    this.displayFullScreenImageWithText(texture, stageWidth, stageHeight, customText);
+                    console.log("全屏显示助理after图片（20级升级） - 助理ID:", assistantId, "动态加载图片成功");
+                } else {
+                    console.log("全屏显示图片加载失败:", imagePath);
+                    // 加载失败也要清理
+                    if (this.fullScreenAfterImage) {
+                        this.fullScreenAfterImage.destroy();
+                        this.fullScreenAfterImage = null;
+                    }
+                }
+            }), null, Laya.Loader.IMAGE);
+        }
+    }
+    
+    /**
+     * 显示全屏图片（内部方法，带自定义文字）
+     * @param texture 图片纹理
+     * @param stageWidth 舞台宽度
+     * @param stageHeight 舞台高度
+     * @param customText 自定义文字
+     */
+    private displayFullScreenImageWithText(texture: Laya.Texture, stageWidth: number, stageHeight: number, customText: string): void {
+        if (!this.fullScreenAfterImage || this.fullScreenAfterImage.destroyed) {
+            return;
+        }
+        
+        const imageWidth = texture.width || 200;
+        const imageHeight = texture.height || 200;
+        
+        // 计算目标尺寸（屏幕的80%）
+        const targetScale = 0.8;
+        const targetDisplayWidth = stageWidth * targetScale;
+        const targetDisplayHeight = stageHeight * targetScale;
+        
+        // 计算图片缩放比例，使图片适应目标尺寸（保持宽高比）
+        const scaleX = targetDisplayWidth / imageWidth;
+        const scaleY = targetDisplayHeight / imageHeight;
+        const imageScale = Math.max(scaleX, scaleY); // 使用较大的缩放比例，确保图片能填满目标区域
+        
+        // 最终绘制尺寸（这是图片的实际绘制尺寸，最终显示为屏幕的80%）
+        const finalDisplayWidth = imageWidth * imageScale;
+        const finalDisplayHeight = imageHeight * imageScale;
+        
+        // 设置图片中心点为缩放中心
+        this.fullScreenAfterImage.pivotX = finalDisplayWidth / 2;
+        this.fullScreenAfterImage.pivotY = finalDisplayHeight / 2;
+        
+        // 居中显示
+        const centerX = stageWidth / 2;
+        const centerY = stageHeight / 2;
+        this.fullScreenAfterImage.pos(centerX, centerY);
+        
+        // 绘制图片（使用最终尺寸）
+        this.fullScreenAfterImage.graphics.clear();
+        this.fullScreenAfterImage.graphics.drawTexture(texture, 0, 0, finalDisplayWidth, finalDisplayHeight);
+        
+        // 设置初始缩放（较大，比如1.5倍）
+        const initialScale = 1.5;
+        this.fullScreenAfterImage.scaleX = initialScale;
+        this.fullScreenAfterImage.scaleY = initialScale;
+        
+        // 使用Tween快速缩小到目标尺寸（scale = 1.0，因为绘制尺寸已经是按屏幕80%计算的）
+        Laya.Tween.to(this.fullScreenAfterImage, {
+            scaleX: 1.0,
+            scaleY: 1.0
+        }, 300, Laya.Ease.backOut, Laya.Handler.create(this, () => {
+            console.log("全屏after图片缩放动画完成，最终显示为屏幕的80%");
+        }));
+        
+        // 创建自定义文字文本（显示在图片上方）
+        this.fullScreenAssistantNameLabel = new Laya.Text();
+        this.fullScreenAssistantNameLabel.name = "fullScreenAssistantNameLabel";
+        this.fullScreenAssistantNameLabel.text = customText;
+        this.fullScreenAssistantNameLabel.fontSize = Math.max(28, Math.min(stageWidth * 0.08, 48));
+        this.fullScreenAssistantNameLabel.color = "#ffffff";
+        this.fullScreenAssistantNameLabel.width = stageWidth;
+        this.fullScreenAssistantNameLabel.height = Math.max(40, stageHeight * 0.06);
+        this.fullScreenAssistantNameLabel.align = "center";
+        this.fullScreenAssistantNameLabel.valign = "middle";
+        // 位置：屏幕上方，距离顶部10%
+        this.fullScreenAssistantNameLabel.pos(0, stageHeight * 0.1);
+        this.fullScreenAssistantNameLabel.mouseEnabled = false;
+        this.fullScreenAssistantNameLabel.mouseThrough = true;
+        // 添加到stage的最上层
+        Laya.stage.addChild(this.fullScreenAssistantNameLabel);
+        Laya.stage.setChildIndex(this.fullScreenAssistantNameLabel, Laya.stage.numChildren - 1);
+        console.log("显示自定义文字:", customText);
+        
+        // 创建全屏黑色遮挡（在图片后方）
+        this.fullScreenBottomMask = new Laya.Sprite();
+        this.fullScreenBottomMask.name = "fullScreenBottomMask";
+        // 全屏遮挡
+        this.fullScreenBottomMask.size(stageWidth, stageHeight);
+        this.fullScreenBottomMask.pos(0, 0);
+        // 绘制半透明黑色矩形（全屏）
+        this.fullScreenBottomMask.graphics.drawRect(0, 0, stageWidth, stageHeight, "#000000");
+        this.fullScreenBottomMask.alpha = 0.6; // 60%透明度
+        this.fullScreenBottomMask.mouseEnabled = false;
+        this.fullScreenBottomMask.mouseThrough = true;
+        // 添加到stage，在图片后方（z-index更低）
+        Laya.stage.addChild(this.fullScreenBottomMask);
+        // 设置层级：确保在图片下方（图片会显示在遮挡上方）
+        const imageIndex = Laya.stage.getChildIndex(this.fullScreenAfterImage);
+        // 如果图片索引大于0，将遮挡设置到图片下方；否则设置为0
+        const maskIndex = imageIndex > 0 ? imageIndex - 1 : 0;
+        Laya.stage.setChildIndex(this.fullScreenBottomMask, maskIndex);
+        console.log("创建全屏黑色遮挡（在图片后方），遮挡层级:", maskIndex, "图片层级:", imageIndex);
+        
+        // 1秒后启用点击，并显示"点按任意键继续"文字
+        Laya.timer.once(1000, this, () => {
+            if (this.fullScreenAfterImage && !this.fullScreenAfterImage.destroyed) {
+                // 启用点击
+                this.fullScreenAfterImage.mouseEnabled = true;
+                // 添加点击事件监听
+                this.fullScreenAfterImage.on(Laya.Event.CLICK, this, this.hideFullScreenAfterImage);
+                console.log("全屏after图片已启用点击，点击屏幕任意位置可关闭");
+                
+                // 创建"点按任意键继续"文本（显示在图片下方）
+                this.fullScreenContinueLabel = new Laya.Text();
+                this.fullScreenContinueLabel.name = "fullScreenContinueLabel";
+                this.fullScreenContinueLabel.text = "点按任意键继续";
+                this.fullScreenContinueLabel.fontSize = Math.max(20, Math.min(stageWidth * 0.05, 32));
+                this.fullScreenContinueLabel.color = "#ffffff";
+                this.fullScreenContinueLabel.width = stageWidth;
+                this.fullScreenContinueLabel.height = Math.max(30, stageHeight * 0.04);
+                this.fullScreenContinueLabel.align = "center";
+                this.fullScreenContinueLabel.valign = "middle";
+                // 位置：屏幕下方，距离底部10%
+                this.fullScreenContinueLabel.pos(0, stageHeight * 0.9);
+                this.fullScreenContinueLabel.mouseEnabled = false;
+                this.fullScreenContinueLabel.mouseThrough = true;
+                // 添加到stage的最上层
+                Laya.stage.addChild(this.fullScreenContinueLabel);
+                Laya.stage.setChildIndex(this.fullScreenContinueLabel, Laya.stage.numChildren - 1);
+                console.log("显示'点按任意键继续'提示");
+            }
+        });
+    }
+    
+    /**
+     * 显示全屏图片（内部方法）
+     * @param texture 图片纹理
+     * @param stageWidth 舞台宽度
+     * @param stageHeight 舞台高度
+     * @param assistantId 助理ID
+     * @param assistantName 助理名字
+     */
+    private displayFullScreenImage(texture: Laya.Texture, stageWidth: number, stageHeight: number, assistantId: number, assistantName: string): void {
+        if (!this.fullScreenAfterImage || this.fullScreenAfterImage.destroyed) {
+            return;
+        }
+        
+        const imageWidth = texture.width || 200;
+        const imageHeight = texture.height || 200;
+        
+        // 计算目标尺寸（屏幕的80%）
+        const targetScale = 0.8;
+        const targetDisplayWidth = stageWidth * targetScale;
+        const targetDisplayHeight = stageHeight * targetScale;
+        
+        // 计算图片缩放比例，使图片适应目标尺寸（保持宽高比）
+        const scaleX = targetDisplayWidth / imageWidth;
+        const scaleY = targetDisplayHeight / imageHeight;
+        const imageScale = Math.max(scaleX, scaleY); // 使用较大的缩放比例，确保图片能填满目标区域
+        
+        // 最终绘制尺寸（这是图片的实际绘制尺寸，最终显示为屏幕的80%）
+        const finalDisplayWidth = imageWidth * imageScale;
+        const finalDisplayHeight = imageHeight * imageScale;
+        
+        // 设置图片中心点为缩放中心
+        this.fullScreenAfterImage.pivotX = finalDisplayWidth / 2;
+        this.fullScreenAfterImage.pivotY = finalDisplayHeight / 2;
+        
+        // 居中显示
+        const centerX = stageWidth / 2;
+        const centerY = stageHeight / 2;
+        this.fullScreenAfterImage.pos(centerX, centerY);
+        
+        // 绘制图片（使用最终尺寸）
+        this.fullScreenAfterImage.graphics.clear();
+        this.fullScreenAfterImage.graphics.drawTexture(texture, 0, 0, finalDisplayWidth, finalDisplayHeight);
+        
+        // 设置初始缩放（较大，比如1.5倍）
+        const initialScale = 1.5;
+        this.fullScreenAfterImage.scaleX = initialScale;
+        this.fullScreenAfterImage.scaleY = initialScale;
+        
+        // 使用Tween快速缩小到目标尺寸（scale = 1.0，因为绘制尺寸已经是按屏幕80%计算的）
+        Laya.Tween.to(this.fullScreenAfterImage, {
+            scaleX: 1.0,
+            scaleY: 1.0
+        }, 300, Laya.Ease.backOut, Laya.Handler.create(this, () => {
+            console.log("全屏after图片缩放动画完成，最终显示为屏幕的80%");
+        }));
+        
+        // 创建助理名字文本（显示在图片上方）
+        this.fullScreenAssistantNameLabel = new Laya.Text();
+        this.fullScreenAssistantNameLabel.name = "fullScreenAssistantNameLabel";
+        this.fullScreenAssistantNameLabel.text = assistantName;
+        this.fullScreenAssistantNameLabel.fontSize = Math.max(28, Math.min(stageWidth * 0.08, 48));
+        this.fullScreenAssistantNameLabel.color = "#ffffff";
+        this.fullScreenAssistantNameLabel.width = stageWidth;
+        this.fullScreenAssistantNameLabel.height = Math.max(40, stageHeight * 0.06);
+        this.fullScreenAssistantNameLabel.align = "center";
+        this.fullScreenAssistantNameLabel.valign = "middle";
+        // 位置：屏幕上方，距离顶部10%
+        this.fullScreenAssistantNameLabel.pos(0, stageHeight * 0.1);
+        this.fullScreenAssistantNameLabel.mouseEnabled = false;
+        this.fullScreenAssistantNameLabel.mouseThrough = true;
+        // 添加到stage的最上层
+        Laya.stage.addChild(this.fullScreenAssistantNameLabel);
+        Laya.stage.setChildIndex(this.fullScreenAssistantNameLabel, Laya.stage.numChildren - 1);
+        console.log("显示助理名字:", assistantName);
+        
+        // 创建全屏黑色遮挡（在图片后方）
+        this.fullScreenBottomMask = new Laya.Sprite();
+        this.fullScreenBottomMask.name = "fullScreenBottomMask";
+        // 全屏遮挡
+        this.fullScreenBottomMask.size(stageWidth, stageHeight);
+        this.fullScreenBottomMask.pos(0, 0);
+        // 绘制半透明黑色矩形（全屏）
+        this.fullScreenBottomMask.graphics.drawRect(0, 0, stageWidth, stageHeight, "#000000");
+        this.fullScreenBottomMask.alpha = 0.6; // 60%透明度
+        this.fullScreenBottomMask.mouseEnabled = false;
+        this.fullScreenBottomMask.mouseThrough = true;
+        // 添加到stage，在图片后方（z-index更低）
+        Laya.stage.addChild(this.fullScreenBottomMask);
+        // 设置层级：确保在图片下方（图片会显示在遮挡上方）
+        const imageIndex = Laya.stage.getChildIndex(this.fullScreenAfterImage);
+        // 如果图片索引大于0，将遮挡设置到图片下方；否则设置为0
+        const maskIndex = imageIndex > 0 ? imageIndex - 1 : 0;
+        Laya.stage.setChildIndex(this.fullScreenBottomMask, maskIndex);
+        console.log("创建全屏黑色遮挡（在图片后方），遮挡层级:", maskIndex, "图片层级:", imageIndex);
+        
+        // 1秒后启用点击，并显示"点按任意键继续"文字
+        Laya.timer.once(1000, this, () => {
+            if (this.fullScreenAfterImage && !this.fullScreenAfterImage.destroyed) {
+                // 启用点击
+                this.fullScreenAfterImage.mouseEnabled = true;
+                // 添加点击事件监听
+                this.fullScreenAfterImage.on(Laya.Event.CLICK, this, this.hideFullScreenAfterImage);
+                console.log("全屏after图片已启用点击，点击屏幕任意位置可关闭");
+                
+                // 创建"点按任意键继续"文本（显示在图片下方）
+                this.fullScreenContinueLabel = new Laya.Text();
+                this.fullScreenContinueLabel.name = "fullScreenContinueLabel";
+                this.fullScreenContinueLabel.text = "点按任意键继续";
+                this.fullScreenContinueLabel.fontSize = Math.max(20, Math.min(stageWidth * 0.05, 32));
+                this.fullScreenContinueLabel.color = "#ffffff";
+                this.fullScreenContinueLabel.width = stageWidth;
+                this.fullScreenContinueLabel.height = Math.max(30, stageHeight * 0.04);
+                this.fullScreenContinueLabel.align = "center";
+                this.fullScreenContinueLabel.valign = "middle";
+                // 位置：屏幕下方，距离底部10%
+                this.fullScreenContinueLabel.pos(0, stageHeight * 0.9);
+                this.fullScreenContinueLabel.mouseEnabled = false;
+                this.fullScreenContinueLabel.mouseThrough = true;
+                // 添加到stage的最上层
+                Laya.stage.addChild(this.fullScreenContinueLabel);
+                Laya.stage.setChildIndex(this.fullScreenContinueLabel, Laya.stage.numChildren - 1);
+                console.log("显示'点按任意键继续'提示");
+            }
+        });
+    }
+    
+    /**
+     * 播放挑战成功视频
+     * @param assistantId 助理ID（对应挑战ID）
+     * @param multiplierBonusPercent 倍率加成百分比值
+     */
+    private playChallengeSuccessVideo(assistantId: number, multiplierBonusPercent: number): void {
+        const wx = (window as any).wx;
+        
+        // 检查是否在微信小游戏环境中
+        if (!wx || !wx.createVideo) {
+            console.log("不在微信小游戏环境中或不支持视频播放，直接显示success图片");
+            // 如果不在微信小游戏环境，直接显示success图片
+            this.showFullScreenSuccessImage(assistantId, multiplierBonusPercent);
+            return;
+        }
+        
+        // 获取窗口信息
+        const windowInfo = wx.getWindowInfo();
+        const { windowWidth, windowHeight } = windowInfo;
+        
+        // 构建视频路径（url前部分和gameDataManager一致）
+        // 使用GameDataManager的apiBaseUrl作为基础URL
+        const apiBaseUrl = GameDataManager.getApiBaseUrl();
+        const videoPath = `${apiBaseUrl}/resources/assist/${assistantId}/success.mp4`;
+        
+        console.log("开始播放挑战成功视频 - 助理ID:", assistantId, "视频路径:", videoPath);
+        
+        // 创建视频对象（保持原比例，宽度占满屏幕）
+        const video = wx.createVideo({
+            src: videoPath,
+            width: windowWidth,
+            height: windowHeight, // 高度设置为屏幕高度，实际显示高度会根据视频比例自适应
+            loop: false, // 不循环播放
+            controls: false, // 不显示控制条
+            showProgress: false, // 不显示进度条
+            showProgressInControlMode: false,
+            autoplay: true, // 自动播放
+            showCenterPlayBtn: false, // 不显示中心播放按钮
+            underGameView: false, // 放在游戏画布之上渲染，确保可见
+            enableProgressGesture: false, // 禁用进度手势
+            objectFit: "contain" // 保持宽高比，宽度占满屏幕，高度按比例自适应
+        });
+        
+        // 监听视频播放结束事件
+        video.onEnded(() => {
+            console.log("挑战成功视频播放结束 - 助理ID:", assistantId);
+            // 视频播放完成后，销毁视频并显示success图片（传入倍率值）
+            video.destroy();
+            this.showFullScreenSuccessImage(assistantId, multiplierBonusPercent);
+        });
+        
+        // 监听视频播放错误
+        video.onError((res: any) => {
+            console.error("视频播放失败 - 助理ID:", assistantId, "错误信息:", res);
+            // 播放失败时，直接显示success图片（传入倍率值）
+            video.destroy();
+            this.showFullScreenSuccessImage(assistantId, multiplierBonusPercent);
+        });
+        
+        // 开始播放视频
+        video.play();
+        console.log("挑战成功视频开始播放 - 助理ID:", assistantId);
+    }
+    
+    /**
+     * 全屏显示挑战成功success图片
+     * @param challengeId 挑战ID（对应助理ID）
+     * @param multiplierBonusPercent 倍率加成百分比值
+     */
+    private showFullScreenSuccessImage(challengeId: number, multiplierBonusPercent: number): void {
+        // 如果已有全屏图片正在显示，先移除
+        if (this.fullScreenAfterImage) {
+            // 停止所有Tween动画
+            Laya.Tween.clearAll(this.fullScreenAfterImage);
+            // 移除事件监听
+            this.fullScreenAfterImage.off(Laya.Event.CLICK, this, this.hideFullScreenAfterImage);
+            this.fullScreenAfterImage.destroy();
+            this.fullScreenAfterImage = null;
+        }
+        
+        // 清理文本对象
+        if (this.fullScreenAssistantNameLabel) {
+            this.fullScreenAssistantNameLabel.destroy();
+            this.fullScreenAssistantNameLabel = null;
+        }
+        if (this.fullScreenContinueLabel) {
+            this.fullScreenContinueLabel.destroy();
+            this.fullScreenContinueLabel = null;
+        }
+        // 清理黑色遮挡
+        if (this.fullScreenBottomMask) {
+            this.fullScreenBottomMask.destroy();
+            this.fullScreenBottomMask = null;
+        }
+        
+        const stageWidth = Laya.stage.width || 750;
+        const stageHeight = Laya.stage.height || 1334;
+        const imagePath = this.getServerResourceUrl(`resources/assist/${challengeId}/success.png`);
+        
+        // 创建全屏显示的Sprite
+        this.fullScreenAfterImage = new Laya.Sprite();
+        this.fullScreenAfterImage.name = "fullScreenAfterImage";
+        this.fullScreenAfterImage.size(stageWidth, stageHeight);
+        this.fullScreenAfterImage.mouseEnabled = false; // 初始不可点击，1秒后启用
+        this.fullScreenAfterImage.mouseThrough = false; // 需要响应点击事件
+        
+        // 添加到stage的最上层，确保不被其他UI阻拦
+        Laya.stage.addChild(this.fullScreenAfterImage);
+        // 设置到最上层
+        Laya.stage.setChildIndex(this.fullScreenAfterImage, Laya.stage.numChildren - 1);
+        
+        // 加载图片（从服务器获取）
+        const cachedTexture = Laya.loader.getRes(imagePath);
+        if (cachedTexture) {
+            // 使用缓存的图片
+            this.displayFullScreenSuccessImage(cachedTexture, stageWidth, stageHeight, multiplierBonusPercent);
+            console.log("全屏显示挑战成功success图片 - 挑战ID:", challengeId, "使用缓存图片");
+        } else {
+            // 动态加载图片（从服务器获取）
+            Laya.loader.load(imagePath, Laya.Handler.create(this, (texture: Laya.Texture) => {
+                if (texture && this.fullScreenAfterImage && !this.fullScreenAfterImage.destroyed) {
+                    this.displayFullScreenSuccessImage(texture, stageWidth, stageHeight, multiplierBonusPercent);
+                    console.log("全屏显示挑战成功success图片 - 挑战ID:", challengeId, "动态加载图片成功");
+                } else {
+                    console.log("全屏显示图片加载失败:", imagePath);
+                    // 加载失败也要清理
+                    if (this.fullScreenAfterImage) {
+                        this.fullScreenAfterImage.destroy();
+                        this.fullScreenAfterImage = null;
+                    }
+                }
+            }), null, Laya.Loader.IMAGE);
+        }
+    }
+    
+    /**
+     * 显示全屏挑战成功图片（内部方法）
+     * @param texture 图片纹理
+     * @param stageWidth 舞台宽度
+     * @param stageHeight 舞台高度
+     * @param multiplierBonusPercent 倍率加成百分比值
+     */
+    private displayFullScreenSuccessImage(texture: Laya.Texture, stageWidth: number, stageHeight: number, multiplierBonusPercent: number): void {
+        if (!this.fullScreenAfterImage || this.fullScreenAfterImage.destroyed) {
+            return;
+        }
+        
+        const imageWidth = texture.width || 200;
+        const imageHeight = texture.height || 200;
+        
+        // 计算目标尺寸（屏幕的80%）
+        const targetScale = 0.8;
+        const targetDisplayWidth = stageWidth * targetScale;
+        const targetDisplayHeight = stageHeight * targetScale;
+        
+        // 计算图片缩放比例，使图片适应目标尺寸（保持宽高比）
+        const scaleX = targetDisplayWidth / imageWidth;
+        const scaleY = targetDisplayHeight / imageHeight;
+        const imageScale = Math.max(scaleX, scaleY); // 使用较大的缩放比例，确保图片能填满目标区域
+        
+        // 最终绘制尺寸（这是图片的实际绘制尺寸，最终显示为屏幕的80%）
+        const finalDisplayWidth = imageWidth * imageScale;
+        const finalDisplayHeight = imageHeight * imageScale;
+        
+        // 设置图片中心点为缩放中心
+        this.fullScreenAfterImage.pivotX = finalDisplayWidth / 2;
+        this.fullScreenAfterImage.pivotY = finalDisplayHeight / 2;
+        
+        // 居中显示
+        const centerX = stageWidth / 2;
+        const centerY = stageHeight / 2;
+        this.fullScreenAfterImage.pos(centerX, centerY);
+        
+        // 绘制图片（使用最终尺寸）
+        this.fullScreenAfterImage.graphics.clear();
+        this.fullScreenAfterImage.graphics.drawTexture(texture, 0, 0, finalDisplayWidth, finalDisplayHeight);
+        
+        // 设置初始缩放（较大，比如1.5倍）
+        const initialScale = 1.5;
+        this.fullScreenAfterImage.scaleX = initialScale;
+        this.fullScreenAfterImage.scaleY = initialScale;
+        
+        // 使用Tween快速缩小到目标尺寸（scale = 1.0，因为绘制尺寸已经是按屏幕80%计算的）
+        Laya.Tween.to(this.fullScreenAfterImage, {
+            scaleX: 1.0,
+            scaleY: 1.0
+        }, 300, Laya.Ease.backOut, Laya.Handler.create(this, () => {
+            console.log("全屏success图片缩放动画完成，最终显示为屏幕的80%");
+        }));
+        
+        // 创建"试炼成功，倍率提升{倍率值}%"文本（显示在图片上方）
+        this.fullScreenAssistantNameLabel = new Laya.Text();
+        this.fullScreenAssistantNameLabel.name = "fullScreenAssistantNameLabel";
+        this.fullScreenAssistantNameLabel.text = `试炼成功~倍率提升${multiplierBonusPercent.toFixed(0)}%`;
+        this.fullScreenAssistantNameLabel.fontSize = Math.max(28, Math.min(stageWidth * 0.08, 48));
+        this.fullScreenAssistantNameLabel.color = "#ffffff";
+        this.fullScreenAssistantNameLabel.width = stageWidth;
+        this.fullScreenAssistantNameLabel.height = Math.max(40, stageHeight * 0.06);
+        this.fullScreenAssistantNameLabel.align = "center";
+        this.fullScreenAssistantNameLabel.valign = "middle";
+        // 位置：屏幕上方，距离顶部10%
+        this.fullScreenAssistantNameLabel.pos(0, stageHeight * 0.1);
+        this.fullScreenAssistantNameLabel.mouseEnabled = false;
+        this.fullScreenAssistantNameLabel.mouseThrough = true;
+        // 添加到stage的最上层
+        Laya.stage.addChild(this.fullScreenAssistantNameLabel);
+        Laya.stage.setChildIndex(this.fullScreenAssistantNameLabel, Laya.stage.numChildren - 1);
+        console.log("显示挑战成功文字: 试炼成功，倍率提升", multiplierBonusPercent.toFixed(0) + "%");
+        
+        // 创建全屏黑色遮挡（在图片后方）
+        this.fullScreenBottomMask = new Laya.Sprite();
+        this.fullScreenBottomMask.name = "fullScreenBottomMask";
+        // 全屏遮挡
+        this.fullScreenBottomMask.size(stageWidth, stageHeight);
+        this.fullScreenBottomMask.pos(0, 0);
+        // 绘制半透明黑色矩形（全屏）
+        this.fullScreenBottomMask.graphics.drawRect(0, 0, stageWidth, stageHeight, "#000000");
+        this.fullScreenBottomMask.alpha = 0.6; // 60%透明度
+        this.fullScreenBottomMask.mouseEnabled = false;
+        this.fullScreenBottomMask.mouseThrough = true;
+        // 添加到stage，在图片后方（z-index更低）
+        Laya.stage.addChild(this.fullScreenBottomMask);
+        // 设置层级：确保在图片下方（图片会显示在遮挡上方）
+        const imageIndex = Laya.stage.getChildIndex(this.fullScreenAfterImage);
+        // 如果图片索引大于0，将遮挡设置到图片下方；否则设置为0
+        const maskIndex = imageIndex > 0 ? imageIndex - 1 : 0;
+        Laya.stage.setChildIndex(this.fullScreenBottomMask, maskIndex);
+        console.log("创建全屏黑色遮挡（在图片后方），遮挡层级:", maskIndex, "图片层级:", imageIndex);
+        
+        // 1秒后启用点击，并显示"点按任意键继续"文字
+        Laya.timer.once(1000, this, () => {
+            if (this.fullScreenAfterImage && !this.fullScreenAfterImage.destroyed) {
+                // 启用点击
+                this.fullScreenAfterImage.mouseEnabled = true;
+                // 添加点击事件监听
+                this.fullScreenAfterImage.on(Laya.Event.CLICK, this, this.hideFullScreenAfterImage);
+                console.log("全屏success图片已启用点击，点击屏幕任意位置可关闭");
+                
+                // 创建"点按任意键继续"文本（显示在图片下方）
+                this.fullScreenContinueLabel = new Laya.Text();
+                this.fullScreenContinueLabel.name = "fullScreenContinueLabel";
+                this.fullScreenContinueLabel.text = "点按任意键继续";
+                this.fullScreenContinueLabel.fontSize = Math.max(20, Math.min(stageWidth * 0.05, 32));
+                this.fullScreenContinueLabel.color = "#ffffff";
+                this.fullScreenContinueLabel.width = stageWidth;
+                this.fullScreenContinueLabel.height = Math.max(30, stageHeight * 0.04);
+                this.fullScreenContinueLabel.align = "center";
+                this.fullScreenContinueLabel.valign = "middle";
+                // 位置：屏幕下方，距离底部10%
+                this.fullScreenContinueLabel.pos(0, stageHeight * 0.9);
+                this.fullScreenContinueLabel.mouseEnabled = false;
+                this.fullScreenContinueLabel.mouseThrough = true;
+                // 添加到stage的最上层
+                Laya.stage.addChild(this.fullScreenContinueLabel);
+                Laya.stage.setChildIndex(this.fullScreenContinueLabel, Laya.stage.numChildren - 1);
+                console.log("显示'点按任意键继续'提示");
+            }
+        });
+    }
+    
+    /**
+     * 隐藏全屏after图片（点击后调用）
+     */
+    private hideFullScreenAfterImage(): void {
+        if (this.fullScreenAfterImage && !this.fullScreenAfterImage.destroyed) {
+            // 停止所有Tween动画
+            Laya.Tween.clearAll(this.fullScreenAfterImage);
+            // 移除点击事件监听
+            this.fullScreenAfterImage.off(Laya.Event.CLICK, this, this.hideFullScreenAfterImage);
+            // 销毁Sprite
+            this.fullScreenAfterImage.destroy();
+            this.fullScreenAfterImage = null;
+            console.log("全屏after图片已移除（点击关闭）");
+        }
+        
+        // 清理文本对象
+        if (this.fullScreenAssistantNameLabel) {
+            this.fullScreenAssistantNameLabel.destroy();
+            this.fullScreenAssistantNameLabel = null;
+        }
+        if (this.fullScreenContinueLabel) {
+            this.fullScreenContinueLabel.destroy();
+            this.fullScreenContinueLabel = null;
+        }
+        // 清理黑色遮挡
+        if (this.fullScreenBottomMask) {
+            this.fullScreenBottomMask.destroy();
+            this.fullScreenBottomMask = null;
+        }
     }
 }
