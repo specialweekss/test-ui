@@ -82,6 +82,12 @@ export class Main extends Laya.Script {
     // 数据加载状态
     private dataLoaded: boolean = false; // 数据是否已加载
     
+    // 离线收益相关
+    private offlineEarnings: number = 0; // 离线收益（金币）
+    private offlineEarningsDialog: Laya.Sprite = null; // 离线收益弹窗
+    private offlineEarningsResolved: boolean = false; // 离线收益是否已处理（领取或放弃）
+    private autoSaveEnabled: boolean = false; // 是否启用自动保存（离线收益处理完成后才启用）
+    
     // 助理after图片显示相关
     private assistantAfterImage: Laya.Sprite; // 桌子上方显示的助理after图片
     private clickRewardCount: number = 0; // 点击收益计数（每10次切换一次助理图片）
@@ -3488,14 +3494,28 @@ export class Main extends Laya.Script {
                     });
                     
                     console.log("游戏数据恢复完成");
+                    
+                    // 计算离线收益（如果距离上次更新时间大于1分钟）
+                    this.calculateOfflineEarnings(playerInfo.lastUpdateTime);
                 } else {
                     console.log("使用默认游戏数据");
+                    // 没有数据，直接标记为已处理，可以开始自动保存
+                    this.offlineEarningsResolved = true;
                 }
                 
                 this.dataLoaded = true;
                 
-                // 数据加载完成后，启动定时保存（每秒保存一次）
-                this.startAutoSave();
+                // 如果有离线收益，显示弹窗；否则直接启动自动保存
+                if (this.offlineEarnings > 0) {
+                    // 延迟一帧显示弹窗，确保UI已创建
+                    Laya.timer.frameOnce(1, this, () => {
+                        this.showOfflineEarningsDialog();
+                    });
+                } else {
+                    // 没有离线收益，直接启动自动保存
+                    this.offlineEarningsResolved = true;
+                    this.startAutoSave();
+                }
                 
                 // 调用回调函数，传递成功标志
                 if (callback) {
@@ -3504,6 +3524,8 @@ export class Main extends Laya.Script {
             } else {
                 console.log("数据加载失败，使用默认数据");
                 this.dataLoaded = true;
+                // 没有数据，直接标记为已处理，可以开始自动保存
+                this.offlineEarningsResolved = true;
                 
                 // 即使加载失败，也启动定时保存
                 this.startAutoSave();
@@ -3550,11 +3572,18 @@ export class Main extends Laya.Script {
      * 启动定时保存
      */
     private startAutoSave(): void {
+        // 只有在离线收益处理完成后才启动自动保存
+        if (!this.offlineEarningsResolved) {
+            console.log("离线收益未处理，暂不启动自动保存");
+            return;
+        }
+        
         // 启动定时保存
         // 注意：如需修改自动保存间隔，请直接修改 GameDataManager 中的 autoSaveInterval 变量，然后重启游戏
         GameDataManager.startAutoSave(() => {
             return this.getCurrentGameData();
         });
+        this.autoSaveEnabled = true;
         console.log("定时保存已启动");
     }
     
@@ -3564,6 +3593,11 @@ export class Main extends Laya.Script {
     private getCurrentGameData(): any {
         // 如果数据还未加载完成，返回null
         if (!this.dataLoaded) {
+            return null;
+        }
+        
+        // 如果离线收益未处理完成，返回null（不上传数据，避免更新时间变动）
+        if (!this.offlineEarningsResolved) {
             return null;
         }
         
@@ -3578,6 +3612,259 @@ export class Main extends Laya.Script {
             this.assistants,
             this.challenges
         );
+    }
+    
+    /**
+     * 计算离线收益
+     * @param lastUpdateTime 上次更新时间（格式：YYYY-MM-DD HH:mm:ss）
+     */
+    private calculateOfflineEarnings(lastUpdateTime?: string): void {
+        // 如果没有上次更新时间，不计算离线收益
+        if (!lastUpdateTime) {
+            console.log("没有上次更新时间，不计算离线收益");
+            this.offlineEarnings = 0;
+            return;
+        }
+        
+        try {
+            // 解析上次更新时间（支持ISO格式：2025-11-16T09:40:31）
+            let lastUpdate: Date;
+            
+            // 如果是ISO格式（包含T），直接解析
+            if (lastUpdateTime.includes('T')) {
+                lastUpdate = new Date(lastUpdateTime);
+            } else {
+                // 传统格式：YYYY-MM-DD HH:mm:ss，替换为 YYYY/MM/DD HH:mm:ss
+                lastUpdate = new Date(lastUpdateTime.replace(/-/g, '/').replace(' ', 'T'));
+            }
+            
+            // 检查日期是否有效
+            if (isNaN(lastUpdate.getTime())) {
+                console.error("无效的日期格式:", lastUpdateTime);
+                this.offlineEarnings = 0;
+                return;
+            }
+            
+            const now = new Date();
+            const diffSeconds = Math.floor((now.getTime() - lastUpdate.getTime()) / 1000);
+            
+            console.log("上次更新时间:", lastUpdate.toLocaleString(), "当前时间:", now.toLocaleString());
+            console.log("距离上次更新时间:", diffSeconds, "秒");
+            
+            // 如果距离上次更新时间小于等于60秒（1分钟），不计算离线收益
+            if (diffSeconds <= 60) {
+                console.log("距离上次更新时间不足1分钟，不计算离线收益");
+                this.offlineEarnings = 0;
+                return;
+            }
+            
+            // 如果时间差为负数（可能是时区问题），不计算离线收益
+            if (diffSeconds < 0) {
+                console.warn("时间差为负数，可能是时区问题，不计算离线收益");
+                this.offlineEarnings = 0;
+                return;
+            }
+            
+            // 计算每秒收益（使用当前的助理配置）
+            let perSecondEarnings = 0;
+            for (const assistant of this.assistants) {
+                if (assistant.unlocked && assistant.level > 0) {
+                    // n级助理每秒可提供解锁所需金币的0.0n倍的金币（即解锁所需金币 * n / 100）
+                    const earnings = Math.floor(assistant.unlockCost * assistant.level / 100);
+                    perSecondEarnings += earnings;
+                }
+            }
+            
+            // 乘以培训倍率（2的n次方）
+            const trainingMultiplier = Math.pow(2, this.trainingCount);
+            const finalPerSecondEarnings = perSecondEarnings * trainingMultiplier;
+            
+            // 计算离线收益（离线秒数 * 每秒收益）
+            this.offlineEarnings = Math.floor(finalPerSecondEarnings * diffSeconds);
+            
+            console.log("离线收益计算:", "离线秒数=" + diffSeconds, "每秒收益=" + finalPerSecondEarnings, "总收益=" + this.offlineEarnings);
+        } catch (error) {
+            console.error("计算离线收益失败:", error, "lastUpdateTime:", lastUpdateTime);
+            this.offlineEarnings = 0;
+        }
+    }
+    
+    /**
+     * 显示离线收益弹窗
+     */
+    private showOfflineEarningsDialog(): void {
+        if (this.offlineEarnings <= 0) {
+            return;
+        }
+        
+        const stageWidth = Laya.stage.width || 750;
+        const stageHeight = Laya.stage.height || 1334;
+        
+        // 创建弹窗容器
+        const dialog = new Laya.Sprite();
+        dialog.name = "offlineEarningsDialog";
+        dialog.size(stageWidth, stageHeight);
+        
+        // 创建半透明背景遮罩
+        const mask = new Laya.Sprite();
+        mask.name = "mask";
+        mask.size(stageWidth, stageHeight);
+        mask.graphics.drawRect(0, 0, stageWidth, stageHeight, "#000000");
+        mask.alpha = 0.5;
+        mask.mouseEnabled = true;
+        dialog.addChild(mask);
+        
+        // 弹窗尺寸（手机端适配）
+        const dialogWidth = Math.max(280, Math.min(stageWidth * 0.8, 400));
+        const dialogHeight = Math.max(200, Math.min(stageHeight * 0.3, 300));
+        const fontSize = Math.max(16, Math.min(stageWidth * 0.04, 24));
+        const buttonFontSize = Math.max(14, Math.min(stageWidth * 0.035, 20));
+        
+        // 创建弹窗背景
+        const dialogBg = new Laya.Sprite();
+        dialogBg.name = "dialogBg";
+        dialogBg.size(dialogWidth, dialogHeight);
+        dialogBg.graphics.drawRect(0, 0, dialogWidth, dialogHeight, "#ffffff");
+        dialogBg.graphics.drawRect(2, 2, dialogWidth - 4, dialogHeight - 4, "#333333", "#333333", 2);
+        dialogBg.pos((stageWidth - dialogWidth) / 2, (stageHeight - dialogHeight) / 2);
+        dialog.addChild(dialogBg);
+        
+        // 创建标题
+        const titleLabel = new Laya.Text();
+        titleLabel.name = "titleLabel";
+        titleLabel.text = "离线收益";
+        titleLabel.fontSize = fontSize + 4;
+        titleLabel.color = "#333333";
+        titleLabel.width = dialogWidth;
+        titleLabel.height = fontSize * 2;
+        titleLabel.align = "center";
+        titleLabel.valign = "middle";
+        titleLabel.pos(0, fontSize * 0.5);
+        titleLabel.mouseEnabled = false;
+        dialogBg.addChild(titleLabel);
+        
+        // 创建收益显示
+        const earningsLabel = new Laya.Text();
+        earningsLabel.name = "earningsLabel";
+        earningsLabel.text = "获得金币: " + this.formatMoney(this.offlineEarnings);
+        earningsLabel.fontSize = fontSize;
+        earningsLabel.color = "#ff6600";
+        earningsLabel.width = dialogWidth;
+        earningsLabel.height = fontSize * 1.5;
+        earningsLabel.align = "center";
+        earningsLabel.valign = "middle";
+        earningsLabel.pos(0, fontSize * 3);
+        earningsLabel.mouseEnabled = false;
+        dialogBg.addChild(earningsLabel);
+        
+        // 创建按钮容器
+        const buttonContainer = new Laya.Sprite();
+        buttonContainer.name = "buttonContainer";
+        buttonContainer.pos(0, dialogHeight - fontSize * 4);
+        dialogBg.addChild(buttonContainer);
+        
+        // 创建放弃按钮
+        const cancelBtn = new Laya.Sprite();
+        cancelBtn.name = "cancelBtn";
+        const cancelBtnWidth = (dialogWidth - fontSize) / 2;
+        const cancelBtnHeight = fontSize * 2;
+        cancelBtn.size(cancelBtnWidth, cancelBtnHeight);
+        cancelBtn.graphics.drawRect(0, 0, cancelBtnWidth, cancelBtnHeight, "#cccccc");
+        cancelBtn.graphics.drawRect(2, 2, cancelBtnWidth - 4, cancelBtnHeight - 4, "#999999", "#999999", 2);
+        cancelBtn.pos(fontSize * 0.5, 0);
+        
+        const cancelLabel = new Laya.Text();
+        cancelLabel.name = "cancelLabel";
+        cancelLabel.text = "放弃";
+        cancelLabel.fontSize = buttonFontSize;
+        cancelLabel.color = "#333333";
+        cancelLabel.width = cancelBtnWidth;
+        cancelLabel.height = cancelBtnHeight;
+        cancelLabel.align = "center";
+        cancelLabel.valign = "middle";
+        cancelLabel.mouseEnabled = false;
+        cancelBtn.addChild(cancelLabel);
+        
+        cancelBtn.mouseEnabled = true;
+        cancelBtn.on(Laya.Event.CLICK, this, () => {
+            this.onOfflineEarningsCancel();
+        });
+        buttonContainer.addChild(cancelBtn);
+        
+        // 创建领取按钮
+        const confirmBtn = new Laya.Sprite();
+        confirmBtn.name = "confirmBtn";
+        const confirmBtnWidth = (dialogWidth - fontSize) / 2;
+        const confirmBtnHeight = fontSize * 2;
+        confirmBtn.size(confirmBtnWidth, confirmBtnHeight);
+        confirmBtn.graphics.drawRect(0, 0, confirmBtnWidth, confirmBtnHeight, "#4CAF50");
+        confirmBtn.graphics.drawRect(2, 2, confirmBtnWidth - 4, confirmBtnHeight - 4, "#45a049", "#45a049", 2);
+        confirmBtn.pos(cancelBtnWidth + fontSize, 0);
+        
+        const confirmLabel = new Laya.Text();
+        confirmLabel.name = "confirmLabel";
+        confirmLabel.text = "领取";
+        confirmLabel.fontSize = buttonFontSize;
+        confirmLabel.color = "#ffffff";
+        confirmLabel.width = confirmBtnWidth;
+        confirmLabel.height = confirmBtnHeight;
+        confirmLabel.align = "center";
+        confirmLabel.valign = "middle";
+        confirmLabel.mouseEnabled = false;
+        confirmBtn.addChild(confirmLabel);
+        
+        confirmBtn.mouseEnabled = true;
+        confirmBtn.on(Laya.Event.CLICK, this, () => {
+            this.onOfflineEarningsConfirm();
+        });
+        buttonContainer.addChild(confirmBtn);
+        
+        // 添加到舞台
+        Laya.stage.addChild(dialog);
+        this.offlineEarningsDialog = dialog;
+    }
+    
+    /**
+     * 离线收益弹窗 - 领取按钮点击
+     */
+    private onOfflineEarningsConfirm(): void {
+        console.log("领取离线收益:", this.offlineEarnings);
+        
+        // 增加金币
+        this.money += this.offlineEarnings;
+        this.updateMoneyDisplay();
+        
+        // 关闭弹窗
+        this.closeOfflineEarningsDialog();
+        
+        // 标记为已处理，启动自动保存
+        this.offlineEarningsResolved = true;
+        this.startAutoSave();
+    }
+    
+    /**
+     * 离线收益弹窗 - 放弃按钮点击
+     */
+    private onOfflineEarningsCancel(): void {
+        console.log("放弃离线收益");
+        
+        // 关闭弹窗
+        this.closeOfflineEarningsDialog();
+        
+        // 标记为已处理，启动自动保存
+        this.offlineEarningsResolved = true;
+        this.startAutoSave();
+    }
+    
+    /**
+     * 关闭离线收益弹窗
+     */
+    private closeOfflineEarningsDialog(): void {
+        if (this.offlineEarningsDialog) {
+            this.offlineEarningsDialog.removeSelf();
+            this.offlineEarningsDialog = null;
+        }
+        this.offlineEarnings = 0;
     }
     
     /**

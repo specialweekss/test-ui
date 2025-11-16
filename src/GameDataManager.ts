@@ -1168,7 +1168,8 @@ export class GameDataManager {
         clickRewardBase: number,
         clickMultiplier: number,
         upgradeCost: number,
-        trainingCount: number
+        trainingCount: number,
+        lastUpdateTime?: string
     } | null {
         if (!apiData) {
             console.log("API数据为空，使用默认数据");
@@ -1205,8 +1206,12 @@ export class GameDataManager {
                 });
             }
             
-            // 返回玩家信息
-            return playerInfo || null;
+            // 返回玩家信息，包含lastUpdateTime
+            const result: any = playerInfo || null;
+            if (result && apiData.lastUpdateTime) {
+                result.lastUpdateTime = apiData.lastUpdateTime;
+            }
+            return result;
         } catch (error) {
             console.error("恢复游戏数据失败:", error);
             return null;
