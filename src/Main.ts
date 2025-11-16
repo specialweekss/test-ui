@@ -78,9 +78,12 @@ export class Main extends Laya.Script {
     // 连点功能相关
     private upgradeRepeatHandler: Function = null; // 主页面升级连点处理函数
     private assistantRepeatHandlers: Map<number, Function> = new Map(); // 助理操作连点处理函数映射（key: assistantId）
+    private upgradeLongPressTimer: Function = null; // 升级按钮长按定时器处理函数
+    private assistantLongPressTimers: Map<number, Function> = new Map(); // 助理按钮长按定时器处理函数映射（key: assistantId）
     
     // 数据加载状态
     private dataLoaded: boolean = false; // 数据是否已加载
+    private dataLoadSuccess: boolean = false; // 数据是否加载成功（只有加载成功才允许上传）
     
     // 离线收益相关
     private offlineEarnings: number = 0; // 离线收益（金币）
@@ -186,6 +189,7 @@ export class Main extends Laya.Script {
             console.log("不在微信小游戏环境中，使用默认用户ID");
             this.userToken = "default_user";
             GameDataManager.setUserId("default_user");
+            // 非微信环境，直接开始加载游戏（可以正常访问服务器）
             this.startGameLoading();
             return;
         }
@@ -223,54 +227,21 @@ export class Main extends Laya.Script {
                                 this.startGameLoading();
                             }
                         } else {
-                            console.error("获取token失败，使用默认用户ID");
-                            this.userToken = "default_user";
-                            GameDataManager.setUserId("default_user");
-                            
-                            if (Main.LOGIN_TEST_MODE) {
-                                // 登录测试模式：暂停后续流程
-                                console.log("========== 登录测试模式 ==========");
-                                console.log("登录失败，使用默认用户ID");
-                                console.log("程序已暂停，不执行后续游戏加载流程");
-                                console.log("====================================");
-                            } else {
-                                // 正常模式：开始加载游戏
-                                this.startGameLoading();
-                            }
+                            console.error("获取token失败");
+                            // 登录失败，显示错误弹窗，不进入游戏
+                            this.showNetworkErrorDialog();
                         }
                     });
                 } else {
                     console.error("获取登录凭证code失败:", res.errMsg);
-                    this.userToken = "default_user";
-                    GameDataManager.setUserId("default_user");
-                    
-                    if (Main.LOGIN_TEST_MODE) {
-                        // 登录测试模式：暂停后续流程
-                        console.log("========== 登录测试模式 ==========");
-                        console.log("获取登录凭证code失败");
-                        console.log("程序已暂停，不执行后续游戏加载流程");
-                        console.log("====================================");
-                    } else {
-                        // 正常模式：开始加载游戏
-                        this.startGameLoading();
-                    }
+                    // 登录失败，显示错误弹窗，不进入游戏
+                    this.showNetworkErrorDialog();
                 }
             },
             fail: (err: any) => {
                 console.error("微信登录失败:", err);
-                this.userToken = "default_user";
-                GameDataManager.setUserId("default_user");
-                
-                if (Main.LOGIN_TEST_MODE) {
-                    // 登录测试模式：暂停后续流程
-                    console.log("========== 登录测试模式 ==========");
-                    console.log("微信登录失败");
-                    console.log("程序已暂停，不执行后续游戏加载流程");
-                    console.log("====================================");
-                } else {
-                    // 正常模式：开始加载游戏
-                    this.startGameLoading();
-                }
+                // 登录失败，显示错误弹窗，不进入游戏
+                this.showNetworkErrorDialog();
             }
         });
     }
@@ -420,54 +391,153 @@ export class Main extends Laya.Script {
                                     });
                                 });
                             } else {
-                                // 数据加载失败，显示错误信息并重试
-                                console.error("用户数据加载失败，将在3秒后重试...");
-                                this.updateProgress(60);
-                                
-                                // 更新标题显示错误信息
-                                if (this.progressLabel) {
-                                    this.progressLabel.text = "数据加载失败，正在重试...";
-                                }
-                                
-                                // 3秒后重试
-                                Laya.timer.once(3000, this, () => {
-                                    this.loadGameData((retrySuccess: boolean) => {
-                                        if (retrySuccess) {
-                                            // 重试成功，继续加载流程
-                                            currentProgress = 90;
-                                            this.updateProgress(currentProgress);
-                                            
-                                            Laya.timer.once(200, this, () => {
-                                                currentProgress = 100;
-                                                this.updateProgress(currentProgress);
-                                                
-                                                Laya.timer.once(300, this, () => {
-                                                    this.enterGame();
-                                                });
-                                            });
-                                        } else {
-                                            // 重试失败，使用默认数据进入游戏
-                                            console.warn("数据加载重试失败，使用默认数据进入游戏");
-                                            currentProgress = 90;
-                                            this.updateProgress(currentProgress);
-                                            
-                                            Laya.timer.once(200, this, () => {
-                                                currentProgress = 100;
-                                                this.updateProgress(currentProgress);
-                                                
-                                                Laya.timer.once(300, this, () => {
-                                                    this.enterGame();
-                                                });
-                                            });
-                                        }
-                                    });
-                                });
+                                // 数据加载失败，显示错误弹窗，不进入游戏
+                                console.error("用户数据加载失败");
+                                this.showNetworkErrorDialog();
                             }
                         });
                     });
                 });
             });
         });
+    }
+    
+    /**
+     * 显示网络错误弹窗
+     */
+    private showNetworkErrorDialog(): void {
+        if (!this.loadingPage) {
+            return;
+        }
+        
+        const stageWidth = Laya.stage.width || 750;
+        const stageHeight = Laya.stage.height || 1334;
+        
+        // 创建弹窗容器
+        const dialog = new Laya.Sprite();
+        dialog.name = "networkErrorDialog";
+        dialog.size(stageWidth, stageHeight);
+        
+        // 创建半透明背景遮罩
+        const mask = new Laya.Sprite();
+        mask.name = "mask";
+        mask.size(stageWidth, stageHeight);
+        mask.graphics.drawRect(0, 0, stageWidth, stageHeight, "#000000");
+        mask.alpha = 0.5;
+        mask.mouseEnabled = true;
+        dialog.addChild(mask);
+        
+        // 弹窗尺寸（手机端适配）
+        const dialogWidth = Math.max(280, Math.min(stageWidth * 0.8, 400));
+        const dialogHeight = Math.max(180, Math.min(stageHeight * 0.25, 250));
+        const fontSize = Math.max(16, Math.min(stageWidth * 0.04, 24));
+        const buttonFontSize = Math.max(14, Math.min(stageWidth * 0.035, 20));
+        
+        // 创建弹窗背景
+        const dialogBg = new Laya.Sprite();
+        dialogBg.name = "dialogBg";
+        dialogBg.size(dialogWidth, dialogHeight);
+        dialogBg.graphics.drawRect(0, 0, dialogWidth, dialogHeight, "#ffffff");
+        dialogBg.graphics.drawRect(2, 2, dialogWidth - 4, dialogHeight - 4, "#333333", "#333333", 2);
+        dialogBg.pos((stageWidth - dialogWidth) / 2, (stageHeight - dialogHeight) / 2);
+        dialog.addChild(dialogBg);
+        
+        // 创建错误信息文本
+        const errorLabel = new Laya.Text();
+        errorLabel.name = "errorLabel";
+        errorLabel.text = "网络错误，请稍后重试";
+        errorLabel.fontSize = fontSize;
+        errorLabel.color = "#ff3333";
+        errorLabel.width = dialogWidth;
+        errorLabel.height = fontSize * 2;
+        errorLabel.align = "center";
+        errorLabel.valign = "middle";
+        errorLabel.pos(0, fontSize * 1.5);
+        errorLabel.mouseEnabled = false;
+        dialogBg.addChild(errorLabel);
+        
+        // 创建重试按钮
+        const retryBtn = new Laya.Sprite();
+        retryBtn.name = "retryBtn";
+        const retryBtnWidth = dialogWidth - fontSize * 2;
+        const retryBtnHeight = fontSize * 2;
+        retryBtn.size(retryBtnWidth, retryBtnHeight);
+        retryBtn.graphics.drawRect(0, 0, retryBtnWidth, retryBtnHeight, "#4CAF50");
+        retryBtn.graphics.drawRect(2, 2, retryBtnWidth - 4, retryBtnHeight - 4, "#45a049", "#45a049", 2);
+        retryBtn.pos(fontSize, dialogHeight - fontSize * 3);
+        
+        const retryLabel = new Laya.Text();
+        retryLabel.name = "retryLabel";
+        retryLabel.text = "重试";
+        retryLabel.fontSize = buttonFontSize;
+        retryLabel.color = "#ffffff";
+        retryLabel.width = retryBtnWidth;
+        retryLabel.height = retryBtnHeight;
+        retryLabel.align = "center";
+        retryLabel.valign = "middle";
+        retryLabel.mouseEnabled = false;
+        retryBtn.addChild(retryLabel);
+        
+        retryBtn.mouseEnabled = true;
+        retryBtn.on(Laya.Event.CLICK, this, () => {
+            this.onRetryLoadData();
+        });
+        dialogBg.addChild(retryBtn);
+        
+        // 添加到加载页面
+        this.loadingPage.addChild(dialog);
+    }
+    
+    /**
+     * 重试加载数据
+     */
+    private onRetryLoadData(): void {
+        // 移除错误弹窗
+        const dialog = this.loadingPage.getChildByName("networkErrorDialog");
+        if (dialog) {
+            dialog.removeSelf();
+        }
+        
+        // 更新进度提示
+        if (this.progressLabel) {
+            this.progressLabel.text = "正在重试...";
+        }
+        
+        // 更新标题
+        const titleLabel = this.loadingPage.getChildByName("titleLabel") as Laya.Text;
+        if (titleLabel) {
+            titleLabel.text = "加载中...";
+        }
+        
+        // 检查是否已经开始了游戏加载流程
+        // 如果还没有开始，说明是登录失败，需要重新登录
+        if (!this.progressBar) {
+            // 重新开始登录流程
+            this.checkAuthAndLoad();
+        } else {
+            // 已经开始了游戏加载流程，重新加载数据
+            this.updateProgress(60);
+            this.loadGameData((success: boolean) => {
+                if (success) {
+                    // 数据加载成功，继续加载流程
+                    let currentProgress = 90;
+                    this.updateProgress(currentProgress);
+                    
+                    Laya.timer.once(200, this, () => {
+                        currentProgress = 100;
+                        this.updateProgress(currentProgress);
+                        
+                        Laya.timer.once(300, this, () => {
+                            this.enterGame();
+                        });
+                    });
+                } else {
+                    // 重试失败，再次显示错误弹窗
+                    console.error("数据加载重试失败");
+                    this.showNetworkErrorDialog();
+                }
+            });
+        }
     }
     
     /**
@@ -525,11 +595,9 @@ export class Main extends Laya.Script {
         // 添加点击事件监听（点击非按钮区域增加金钱）
         this.setupClickHandler();
         
-        // 启动助理收益定时器（每秒执行一次）
-        this.startAssistantTimer();
-        
-        // 加载用户数据（游戏启动时）
-        this.loadGameData();
+        // 注意：不在这里加载数据和启动定时器
+        // 数据加载在 loadGameResources 的步骤4中统一处理
+        // 定时器在 enterGame() 中启动，确保只有数据加载成功后才启动
     }
     
     /**
@@ -1186,30 +1254,38 @@ export class Main extends Laya.Script {
      * 设置升级按钮的连点功能
      */
     private setupUpgradeRepeatButton(btn: Laya.Sprite): void {
-        // 先执行一次点击
-        btn.on(Laya.Event.CLICK, this, this.onUpgradeClick);
-        
-        // 按住时开始连点
+        // 按住时立即执行一次点击，1秒后才开始连点
         btn.on(Laya.Event.MOUSE_DOWN, this, () => {
             btn.scale(0.95, 0.95);
-            // 立即执行一次
+            // 立即执行一次点击
             this.onUpgradeClick();
-            // 停止之前的连点（如果存在）
+            // 停止之前的连点和定时器（如果存在）
             this.stopUpgradeRepeat();
-            // 开始连点：1秒5次，即每200ms执行一次
-            this.upgradeRepeatHandler = this.onUpgradeClick;
-            Laya.timer.loop(200, this, this.upgradeRepeatHandler);
+            this.clearUpgradeLongPressTimer();
+            // 设置1秒定时器，如果1秒后还在按住，才开始持续升级
+            const longPressHandler = () => {
+                // 1秒后开始连点：1秒5次，即每200ms执行一次
+                this.upgradeRepeatHandler = this.onUpgradeClick;
+                Laya.timer.loop(200, this, this.upgradeRepeatHandler);
+                this.upgradeLongPressTimer = null;
+            };
+            this.upgradeLongPressTimer = longPressHandler;
+            Laya.timer.once(1000, this, longPressHandler);
         });
         
         // 松开时停止连点
         btn.on(Laya.Event.MOUSE_UP, this, () => {
             btn.scale(1, 1);
+            // 清除长按定时器
+            this.clearUpgradeLongPressTimer();
+            // 停止持续升级（如果正在持续升级）
             this.stopUpgradeRepeat();
         });
         
         // 移出按钮时也停止连点
         btn.on(Laya.Event.MOUSE_OUT, this, () => {
             btn.scale(1, 1);
+            this.clearUpgradeLongPressTimer();
             this.stopUpgradeRepeat();
         });
     }
@@ -1221,6 +1297,16 @@ export class Main extends Laya.Script {
         if (this.upgradeRepeatHandler) {
             Laya.timer.clear(this, this.upgradeRepeatHandler);
             this.upgradeRepeatHandler = null;
+        }
+    }
+    
+    /**
+     * 清除升级按钮长按定时器
+     */
+    private clearUpgradeLongPressTimer(): void {
+        if (this.upgradeLongPressTimer) {
+            Laya.timer.clear(this, this.upgradeLongPressTimer);
+            this.upgradeLongPressTimer = null;
         }
     }
     
@@ -1663,12 +1749,6 @@ export class Main extends Laya.Script {
             btnLabel.mouseEnabled = false;
             actionBtn.addChild(btnLabel);
             
-            // 按钮点击事件（单次点击）
-            actionBtn.on(Laya.Event.CLICK, this, (e: Laya.Event) => {
-                e.stopPropagation();
-                this.handleAssistantAction(assistant.id);
-            });
-            
             // 按钮交互效果和连点功能
             const repeatHandler = () => {
                 this.handleAssistantAction(assistant.id);
@@ -1676,24 +1756,35 @@ export class Main extends Laya.Script {
             actionBtn.on(Laya.Event.MOUSE_DOWN, this, (e: Laya.Event) => {
                 e.stopPropagation();
                 actionBtn.scale(0.95, 0.95);
-                // 停止之前的连点（如果存在）
-                this.stopAssistantRepeat(assistant.id);
-                // 立即执行一次
+                // 立即执行一次点击
                 this.handleAssistantAction(assistant.id);
-                // 开始连点：1秒5次，即每200ms执行一次
-                this.assistantRepeatHandlers.set(assistant.id, repeatHandler);
-                Laya.timer.loop(200, this, repeatHandler);
+                // 停止之前的连点和定时器（如果存在）
+                this.stopAssistantRepeat(assistant.id);
+                this.clearAssistantLongPressTimer(assistant.id);
+                // 设置0.5秒定时器，如果0.5秒后还在按住，才开始持续升级
+                const longPressHandler = () => {
+                    // 0.5秒后开始连点：1秒5次，即每200ms执行一次
+                    this.assistantRepeatHandlers.set(assistant.id, repeatHandler);
+                    Laya.timer.loop(200, this, repeatHandler);
+                    this.assistantLongPressTimers.delete(assistant.id);
+                };
+                this.assistantLongPressTimers.set(assistant.id, longPressHandler);
+                Laya.timer.once(500, this, longPressHandler);
             });
             
             actionBtn.on(Laya.Event.MOUSE_UP, this, (e: Laya.Event) => {
                 e.stopPropagation();
                 actionBtn.scale(1, 1);
+                // 清除长按定时器
+                this.clearAssistantLongPressTimer(assistant.id);
+                // 停止持续升级（如果正在持续升级）
                 this.stopAssistantRepeat(assistant.id);
             });
             
             actionBtn.on(Laya.Event.MOUSE_OUT, this, (e: Laya.Event) => {
                 e.stopPropagation();
                 actionBtn.scale(1, 1);
+                this.clearAssistantLongPressTimer(assistant.id);
                 this.stopAssistantRepeat(assistant.id);
             });
             
@@ -1764,6 +1855,17 @@ export class Main extends Laya.Script {
         if (handler) {
             Laya.timer.clear(this, handler);
             this.assistantRepeatHandlers.delete(assistantId);
+        }
+    }
+    
+    /**
+     * 清除助理按钮长按定时器
+     */
+    private clearAssistantLongPressTimer(assistantId: number): void {
+        const timerHandler = this.assistantLongPressTimers.get(assistantId);
+        if (timerHandler) {
+            Laya.timer.clear(this, timerHandler);
+            this.assistantLongPressTimers.delete(assistantId);
         }
     }
     
@@ -3504,6 +3606,7 @@ export class Main extends Laya.Script {
                 }
                 
                 this.dataLoaded = true;
+                this.dataLoadSuccess = true; // 标记数据加载成功
                 
                 // 如果有离线收益，显示弹窗；否则直接启动自动保存
                 if (this.offlineEarnings > 0) {
@@ -3522,13 +3625,10 @@ export class Main extends Laya.Script {
                     callback(true);
                 }
             } else {
-                console.log("数据加载失败，使用默认数据");
+                console.log("数据加载失败，使用默认数据，不启动自动保存");
                 this.dataLoaded = true;
-                // 没有数据，直接标记为已处理，可以开始自动保存
-                this.offlineEarningsResolved = true;
-                
-                // 即使加载失败，也启动定时保存
-                this.startAutoSave();
+                this.dataLoadSuccess = false; // 标记数据加载失败，不允许上传
+                // 数据加载失败时不启动自动保存，避免上传数据
                 
                 // 调用回调函数，传递失败标志
                 if (callback) {
@@ -3593,6 +3693,11 @@ export class Main extends Laya.Script {
     private getCurrentGameData(): any {
         // 如果数据还未加载完成，返回null
         if (!this.dataLoaded) {
+            return null;
+        }
+        
+        // 如果数据加载失败，返回null（不上传数据）
+        if (!this.dataLoadSuccess) {
             return null;
         }
         
