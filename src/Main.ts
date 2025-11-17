@@ -606,6 +606,35 @@ export class Main extends Laya.Script {
     private enterGame(): void {
         console.log("进入游戏主界面");
         
+        // 根据服务端数据判断是否需要播放初始化视频
+        // 条件：等级为1，金币数为0，第一个助理也没有解锁
+        const shouldPlayInitVideo = this.playerLevel === 1 && 
+                                     this.money === 0 && 
+                                     this.assistants.length > 0 && 
+                                     !this.assistants[0].unlocked;
+        
+        if (shouldPlayInitVideo) {
+            // 新用户，播放初始化视频
+            console.log("检测到新用户（等级0，金币0，第一个助理未解锁），播放初始化视频");
+            this.playInitVideo(() => {
+                // 视频播放完成后，继续进入游戏
+                this.continueEnterGame();
+            });
+        } else {
+            // 非新用户，直接进入游戏
+            console.log("非新用户，跳过初始化视频播放", {
+                playerLevel: this.playerLevel,
+                money: this.money,
+                firstAssistantUnlocked: this.assistants.length > 0 ? this.assistants[0].unlocked : false
+            });
+            this.continueEnterGame();
+        }
+    }
+    
+    /**
+     * 继续进入游戏（实际的进入游戏逻辑）
+     */
+    private continueEnterGame(): void {
         // 启动助理收益定时器
         this.startAssistantTimer();
         
@@ -619,6 +648,93 @@ export class Main extends Laya.Script {
                 
             }));
         }
+    }
+    
+    /**
+     * 播放初始化视频
+     * @param onComplete 播放完成回调
+     */
+    private playInitVideo(onComplete: () => void): void {
+        const wx = (window as any).wx;
+        
+        // 检查是否在微信小游戏环境中
+        if (!wx || !wx.createVideo) {
+            console.log("不在微信小游戏环境中或不支持视频播放，跳过初始化视频，直接进入主页面");
+            // 如果不在微信小游戏环境，直接执行完成回调
+            if (onComplete) {
+                onComplete();
+            }
+            return;
+        }
+        
+        // 获取窗口信息
+        const windowInfo = wx.getWindowInfo();
+        const { windowWidth, windowHeight } = windowInfo;
+        
+        // 构建视频路径
+        const apiBaseUrl = GameDataManager.getApiBaseUrl();
+        const videoPath = `${apiBaseUrl}/resources/init.mp4`;
+        
+        console.log("开始播放初始化视频，视频路径:", videoPath);
+        
+        // 创建视频对象（全屏播放）
+        const video = wx.createVideo({
+            src: videoPath,
+            width: windowWidth,
+            height: windowHeight,
+            loop: false, // 不循环播放
+            controls: false, // 不显示控制条
+            showProgress: false, // 不显示进度条
+            showProgressInControlMode: false,
+            autoplay: true, // 自动播放
+            showCenterPlayBtn: false, // 不显示中心播放按钮
+            underGameView: false, // 放在游戏画布之上渲染，确保可见
+            enableProgressGesture: false, // 禁用进度手势
+            objectFit: "contain" // 保持宽高比
+        });
+        
+        // 标记视频是否正常播放
+        let videoPlayed = false;
+        
+        // 监听视频播放开始事件（确认视频正常加载）
+        video.onPlay(() => {
+            console.log("初始化视频开始播放");
+            videoPlayed = true;
+        });
+        
+        // 监听视频播放结束事件
+        video.onEnded(() => {
+            console.log("初始化视频播放结束");
+            // 视频播放完成后，销毁视频并执行完成回调
+            video.destroy();
+            if (onComplete) {
+                onComplete();
+            }
+        });
+        
+        // 监听视频播放错误
+        video.onError((res: any) => {
+            console.error("初始化视频播放失败，错误信息:", res);
+            // 播放失败时，销毁视频并执行完成回调（继续进入游戏）
+            video.destroy();
+            if (onComplete) {
+                onComplete();
+            }
+        });
+        
+        // 设置超时检测：如果3秒内视频没有开始播放，则认为播放失败
+        Laya.timer.once(3000, this, () => {
+            if (!videoPlayed) {
+                console.warn("初始化视频3秒内未开始播放，视为播放失败，直接进入主页面");
+                video.destroy();
+                if (onComplete) {
+                    onComplete();
+                }
+            }
+        });
+        
+        // 开始播放视频
+        video.play();
     }
     
     /**
