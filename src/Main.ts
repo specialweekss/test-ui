@@ -101,6 +101,52 @@ export class Main extends Laya.Script {
     private fullScreenAssistantNameLabel: Laya.Text; // 全屏显示时的助理名字文本（上方）
     private fullScreenContinueLabel: Laya.Text; // 全屏显示时的"点按任意键继续"文本（下方）
     private fullScreenBottomMask: Laya.Sprite; // 全屏显示时图片下方的黑色遮挡
+    private currentChallengeId: number = 0; // 当前显示的挑战ID（用于判断是否是1号挑战的success图片）
+
+    // 新手指引相关
+    private newbieGuideMask: Laya.Sprite; // 新手指引遮挡层
+    private newbieGuideTipLabel: Laya.Text; // 新手指引提示文字
+    private newbieGuideClickArea: Laya.Sprite; // 新手指引可点击区域（中间部分）
+    private isNewbieGuideActive: boolean = false; // 新手指引是否激活
+    private newbieGuideAutoCloseTimer: Function = null; // 新手指引自动关闭定时器
+    
+    // 底部按钮容器
+    private bottomBar: Laya.Sprite; // 底部按钮容器
+    
+    // 助理按钮指引相关
+    private assistantGuideMask: Laya.Sprite; // 助理按钮指引遮挡层
+    private assistantGuideTipLabel: Laya.Text; // 助理按钮指引提示文字
+    private isAssistantGuideActive: boolean = false; // 助理按钮指引是否激活
+    private assistantGuideAutoCloseTimer: Function = null; // 助理按钮指引自动关闭定时器
+    
+    // 助理窗口内指引相关
+    private assistantUnlockGuideMask: Laya.Sprite; // 解锁指引遮挡层
+    private assistantUnlockGuideTipLabel: Laya.Text; // 解锁指引提示文字
+    private isAssistantUnlockGuideActive: boolean = false; // 解锁指引是否激活
+    private assistantUnlockGuideAutoCloseTimer: Function = null; // 解锁指引自动关闭定时器
+    
+    private assistantUpgradeGuideMask: Laya.Sprite; // 升级指引遮挡层
+    private assistantUpgradeGuideTipLabel: Laya.Text; // 升级指引提示文字
+    private isAssistantUpgradeGuideActive: boolean = false; // 升级指引是否激活
+    private assistantUpgradeGuideAutoCloseTimer: Function = null; // 升级指引自动关闭定时器
+    
+    // 主界面升级按钮指引相关
+    private upgradeBtnGuideMask: Laya.Sprite; // 升级按钮指引遮挡层
+    private upgradeBtnGuideTipLabel: Laya.Text; // 升级按钮指引提示文字
+    private isUpgradeBtnGuideActive: boolean = false; // 升级按钮指引是否激活
+    private upgradeBtnGuideAutoCloseTimer: Function = null; // 升级按钮指引自动关闭定时器
+    
+    // 挑战按钮指引相关
+    private challengeBtnGuideMask: Laya.Sprite; // 挑战按钮指引遮挡层
+    private challengeBtnGuideTipLabel: Laya.Text; // 挑战按钮指引提示文字
+    private isChallengeBtnGuideActive: boolean = false; // 挑战按钮指引是否激活
+    private challengeBtnGuideAutoCloseTimer: Function = null; // 挑战按钮指引自动关闭定时器
+    
+    // 挑战窗口指引相关
+    private challengeWindowGuideMask: Laya.Sprite; // 挑战窗口指引遮挡层
+    private challengeWindowGuideTipLabel: Laya.Text; // 挑战窗口指引提示文字
+    private isChallengeWindowGuideActive: boolean = false; // 挑战窗口指引是否激活
+    private challengeWindowGuideAutoCloseTimer: Function = null; // 挑战窗口指引自动关闭定时器
 
     onAwake() {
         console.log("onAwake called");
@@ -646,8 +692,176 @@ export class Main extends Laya.Script {
                     this.loadingPage = null;
                 }
                 
+                // 检查是否需要显示新手指引
+                this.checkAndShowNewbieGuide();
             }));
+        } else {
+            // 如果没有加载页面，直接检查新手指引
+            this.checkAndShowNewbieGuide();
         }
+    }
+    
+    /**
+     * 检查并显示新手指引
+     * 条件：用户等级为1，金币数为0，助理1号未解锁
+     */
+    private checkAndShowNewbieGuide(): void {
+        const shouldShowGuide = this.playerLevel === 1 && 
+                                this.money === 0 && 
+                                this.assistants.length > 0 && 
+                                !this.assistants[0].unlocked;
+        
+        if (shouldShowGuide) {
+            console.log("检测到新用户，显示新手指引");
+            this.showNewbieGuide();
+        } else {
+            console.log("不满足新手指引条件", {
+                playerLevel: this.playerLevel,
+                money: this.money,
+                firstAssistantUnlocked: this.assistants.length > 0 ? this.assistants[0].unlocked : false
+            });
+        }
+    }
+    
+    /**
+     * 显示新手指引
+     */
+    private showNewbieGuide(): void {
+        if (this.isNewbieGuideActive) {
+            return; // 已经显示，不重复显示
+        }
+        
+        this.isNewbieGuideActive = true;
+        const stageWidth = Laya.stage.width || 750;
+        const stageHeight = Laya.stage.height || 1334;
+        
+        // 创建全屏遮挡层（半透明黑色）
+        this.newbieGuideMask = new Laya.Sprite();
+        this.newbieGuideMask.name = "newbieGuideMask";
+        this.newbieGuideMask.size(stageWidth, stageHeight);
+        this.newbieGuideMask.pos(0, 0);
+        
+        // 计算中间可点击区域（屏幕中心，大约占屏幕的30%）
+        const clickAreaSize = Math.min(stageWidth, stageHeight) * 0.3;
+        const centerX = stageWidth / 2;
+        const centerY = stageHeight / 2;
+        const clickAreaX = centerX - clickAreaSize / 2;
+        const clickAreaY = centerY - clickAreaSize / 2;
+        
+        // 绘制遮挡层：绘制4个矩形（上下左右）来形成遮挡，中间留空
+        const graphics = this.newbieGuideMask.graphics;
+        graphics.clear();
+        
+        // 绘制上方遮挡
+        graphics.drawRect(0, 0, stageWidth, clickAreaY, "#000000");
+        // 绘制下方遮挡
+        graphics.drawRect(0, clickAreaY + clickAreaSize, stageWidth, stageHeight - (clickAreaY + clickAreaSize), "#000000");
+        // 绘制左侧遮挡
+        graphics.drawRect(0, clickAreaY, clickAreaX, clickAreaSize, "#000000");
+        // 绘制右侧遮挡
+        graphics.drawRect(clickAreaX + clickAreaSize, clickAreaY, stageWidth - (clickAreaX + clickAreaSize), clickAreaSize, "#000000");
+        
+        this.newbieGuideMask.alpha = 0.7; // 70%透明度
+        this.newbieGuideMask.mouseEnabled = true;
+        this.newbieGuideMask.mouseThrough = false;
+        
+        // 添加到stage最上层
+        Laya.stage.addChild(this.newbieGuideMask);
+        Laya.stage.setChildIndex(this.newbieGuideMask, Laya.stage.numChildren - 1);
+        
+        // 创建中间可点击区域（透明，用于接收点击事件）
+        this.newbieGuideClickArea = new Laya.Sprite();
+        this.newbieGuideClickArea.name = "newbieGuideClickArea";
+        this.newbieGuideClickArea.size(clickAreaSize, clickAreaSize);
+        this.newbieGuideClickArea.pos(clickAreaX, clickAreaY);
+        this.newbieGuideClickArea.mouseEnabled = true;
+        this.newbieGuideClickArea.mouseThrough = false;
+        
+        // 注意：点击事件在setupClickHandler中统一处理，这里不需要单独添加
+        
+        // 添加到stage，在遮挡层上方
+        Laya.stage.addChild(this.newbieGuideClickArea);
+        Laya.stage.setChildIndex(this.newbieGuideClickArea, Laya.stage.numChildren - 1);
+        
+        // 创建提示文字（显示在屏幕上方）
+        this.newbieGuideTipLabel = new Laya.Text();
+        this.newbieGuideTipLabel.name = "newbieGuideTipLabel";
+        this.newbieGuideTipLabel.text = "点击屏幕收取门票，获得收益";
+        this.newbieGuideTipLabel.fontSize = Math.max(24, Math.min(stageWidth * 0.06, 36));
+        this.newbieGuideTipLabel.color = "#000000";
+        this.newbieGuideTipLabel.width = stageWidth;
+        this.newbieGuideTipLabel.height = Math.max(40, stageHeight * 0.06);
+        this.newbieGuideTipLabel.align = "center";
+        this.newbieGuideTipLabel.valign = "middle";
+        // 位置：屏幕上方，距离顶部15%
+        this.newbieGuideTipLabel.pos(0, stageHeight * 0.15);
+        this.newbieGuideTipLabel.mouseEnabled = false;
+        this.newbieGuideTipLabel.mouseThrough = true;
+        
+        // 添加到stage最上层
+        Laya.stage.addChild(this.newbieGuideTipLabel);
+        Laya.stage.setChildIndex(this.newbieGuideTipLabel, Laya.stage.numChildren - 1);
+        
+        // 启动2秒自动关闭定时器（避免指引出错）
+        this.newbieGuideAutoCloseTimer = () => {
+            console.log("新手指引2秒自动关闭定时器触发");
+            this.hideNewbieGuide();
+        };
+        Laya.timer.once(2000, this, this.newbieGuideAutoCloseTimer);
+        
+        console.log("新手指引已显示，将在2秒后自动关闭或金币达到1500时关闭");
+    }
+    
+    /**
+     * 检查新手指引关闭条件（金币达到1500）
+     */
+    private checkNewbieGuideCloseCondition(): void {
+        if (!this.isNewbieGuideActive) {
+            return;
+        }
+        
+        // 如果金币达到1500，关闭指引
+        if (this.money >= 1500) {
+            console.log("金币达到1500，关闭新手指引");
+            this.hideNewbieGuide();
+        }
+    }
+    
+    /**
+     * 隐藏新手指引
+     */
+    private hideNewbieGuide(): void {
+        if (!this.isNewbieGuideActive) {
+            return;
+        }
+        
+        this.isNewbieGuideActive = false;
+        
+        // 清除自动关闭定时器
+        if (this.newbieGuideAutoCloseTimer) {
+            Laya.timer.clear(this, this.newbieGuideAutoCloseTimer);
+            this.newbieGuideAutoCloseTimer = null;
+        }
+        
+        // 移除遮挡层
+        if (this.newbieGuideMask) {
+            this.newbieGuideMask.removeSelf();
+            this.newbieGuideMask = null;
+        }
+        
+        // 移除可点击区域
+        if (this.newbieGuideClickArea) {
+            this.newbieGuideClickArea.removeSelf();
+            this.newbieGuideClickArea = null;
+        }
+        
+        // 移除提示文字
+        if (this.newbieGuideTipLabel) {
+            this.newbieGuideTipLabel.removeSelf();
+            this.newbieGuideTipLabel = null;
+        }
+        
+        console.log("新手指引已隐藏");
     }
     
     /**
@@ -1283,10 +1497,16 @@ export class Main extends Laya.Script {
         const stageHeight = Laya.stage.height || 1334;
         const stageWidth = Laya.stage.width || 750;
         
-        const bottomBar = new Laya.Sprite();
-        bottomBar.name = "bottomBar";
+        // 如果已存在，先移除
+        if (this.bottomBar) {
+            this.bottomBar.removeSelf();
+            this.bottomBar = null;
+        }
+        
+        this.bottomBar = new Laya.Sprite();
+        this.bottomBar.name = "bottomBar";
         // 直接添加到stage
-        Laya.stage.addChild(bottomBar);
+        Laya.stage.addChild(this.bottomBar);
 
         // 手机端适配：按钮大小和位置
         const btnHeight = Math.max(60, Math.min(stageHeight * 0.08, 80)); // 按钮高度：屏幕8%，最小60，最大80
@@ -1304,7 +1524,7 @@ export class Main extends Laya.Script {
         this.upgradeBtn.pos(startX, btnY);
         // 添加连点功能：按住时连续升级
         this.setupUpgradeRepeatButton(this.upgradeBtn);
-        bottomBar.addChild(this.upgradeBtn);
+        this.bottomBar.addChild(this.upgradeBtn);
 
         // 升级所需金币显示背景（在升级按钮上方）
         const costLabelWidth = btnWidth;
@@ -1317,7 +1537,7 @@ export class Main extends Laya.Script {
         this.upgradeCostLabelBg.graphics.drawRect(0, 0, costLabelWidth, costLabelHeight, "#000000");
         this.upgradeCostLabelBg.alpha = 0.7;
         this.upgradeCostLabelBg.pos(startX, costLabelY);
-        bottomBar.addChild(this.upgradeCostLabelBg);
+        this.bottomBar.addChild(this.upgradeCostLabelBg);
 
         // 升级所需金币显示（在升级按钮上方）
         const costFontSize = Math.max(12, Math.min(stageWidth * 0.03, 18));
@@ -1331,7 +1551,7 @@ export class Main extends Laya.Script {
         this.upgradeCostLabel.align = "center";
         this.upgradeCostLabel.valign = "middle";
         this.upgradeCostLabel.pos(startX, costLabelY);
-        bottomBar.addChild(this.upgradeCostLabel);
+        this.bottomBar.addChild(this.upgradeCostLabel);
         
         // 初始化升级按钮颜色提示
         this.updateUpgradeCostDisplay();
@@ -1340,13 +1560,947 @@ export class Main extends Laya.Script {
         this.assistantBtn = this.createButton("#ff6b9d", 0xff6b9d, this.getServerResourceUrl("resources/btn_assistant.png"), btnWidth, btnHeight, "助理");
         this.assistantBtn.pos(startX + btnWidth + btnSpacing, btnY);
         this.assistantBtn.on(Laya.Event.CLICK, this, this.onAssistantClick);
-        bottomBar.addChild(this.assistantBtn);
+        this.bottomBar.addChild(this.assistantBtn);
 
         // 挑战按钮（从服务器获取图片）
         this.challengeBtn = this.createButton("#ff3333", 0xff3333, this.getServerResourceUrl("resources/btn_challenge.png"), btnWidth, btnHeight, "挑战");
         this.challengeBtn.pos(startX + (btnWidth + btnSpacing) * 2, btnY);
         this.challengeBtn.on(Laya.Event.CLICK, this, this.onChallengeClick);
-        bottomBar.addChild(this.challengeBtn);
+        this.bottomBar.addChild(this.challengeBtn);
+        
+        // 根据金币是否达到1500来控制按钮显示
+        this.updateBottomButtonsVisibility();
+    }
+    
+    /**
+     * 更新底部按钮的显示状态（根据金币是否达到1500）
+     */
+    private updateBottomButtonsVisibility(): void {
+        if (!this.bottomBar) {
+            return;
+        }
+        
+        // 检查1号助理解锁状态
+        const firstAssistant = this.assistants.find(a => a.id === 1);
+        const isFirstAssistantUnlocked = firstAssistant && firstAssistant.unlocked;
+        
+        if (isFirstAssistantUnlocked) {
+            // 1号助理解锁后，无论金币多少都显示所有按钮
+            this.bottomBar.visible = true;
+            this.bottomBar.mouseEnabled = true;
+            this.bottomBar.mouseThrough = false;
+            
+            if (this.upgradeBtn) {
+                this.upgradeBtn.visible = true;
+                this.upgradeBtn.mouseEnabled = true;
+            }
+            if (this.upgradeCostLabel) {
+                this.upgradeCostLabel.visible = true;
+            }
+            if (this.upgradeCostLabelBg) {
+                this.upgradeCostLabelBg.visible = true;
+            }
+            if (this.challengeBtn) {
+                this.challengeBtn.visible = true;
+                this.challengeBtn.mouseEnabled = true;
+            }
+            if (this.assistantBtn) {
+                this.assistantBtn.visible = true;
+                this.assistantBtn.mouseEnabled = true;
+            }
+            
+            // 检查是否需要显示升级按钮指引
+            this.checkAndShowUpgradeBtnGuide();
+            
+            // 检查是否需要显示挑战按钮指引
+            this.checkAndShowChallengeBtnGuide();
+        } else {
+            // 1号助理未解锁
+            if (this.money < 2100) {
+                // 金币未达到2100，隐藏所有按钮
+                this.bottomBar.visible = false;
+                this.bottomBar.mouseEnabled = false;
+                this.bottomBar.mouseThrough = true;
+            } else {
+                // 金币达到2100但1号助理未解锁，只显示助理按钮
+                this.bottomBar.visible = true;
+                this.bottomBar.mouseEnabled = true;
+                this.bottomBar.mouseThrough = false;
+                
+                // 只显示助理按钮，隐藏升级和挑战按钮
+                if (this.upgradeBtn) {
+                    this.upgradeBtn.visible = false;
+                    this.upgradeBtn.mouseEnabled = false;
+                }
+                if (this.upgradeCostLabel) {
+                    this.upgradeCostLabel.visible = false;
+                }
+                if (this.upgradeCostLabelBg) {
+                    this.upgradeCostLabelBg.visible = false;
+                }
+                if (this.challengeBtn) {
+                    this.challengeBtn.visible = false;
+                    this.challengeBtn.mouseEnabled = false;
+                }
+                if (this.assistantBtn) {
+                    this.assistantBtn.visible = true;
+                    this.assistantBtn.mouseEnabled = true;
+                }
+                
+                // 检查是否需要显示助理按钮指引
+                this.checkAndShowAssistantGuide();
+            }
+        }
+    }
+    
+    /**
+     * 检查并显示助理按钮指引
+     * 条件：等级1，助理1号未解锁，金币超过2100
+     */
+    private checkAndShowAssistantGuide(): void {
+        // 如果已经显示过，不再显示
+        if (this.isAssistantGuideActive) {
+            return;
+        }
+        
+        const shouldShowGuide = this.playerLevel === 1 && 
+                                this.money > 2100 && 
+                                this.assistants.length > 0 && 
+                                !this.assistants[0].unlocked;
+        
+        if (shouldShowGuide) {
+            console.log("检测到满足助理按钮指引条件，显示指引");
+            this.showAssistantGuide();
+        }
+    }
+    
+    /**
+     * 显示助理按钮指引
+     */
+    private showAssistantGuide(): void {
+        if (this.isAssistantGuideActive) {
+            return; // 已经显示，不重复显示
+        }
+        
+        this.isAssistantGuideActive = true;
+        const stageWidth = Laya.stage.width || 750;
+        const stageHeight = Laya.stage.height || 1334;
+        
+        // 计算助理按钮的位置和大小
+        const btnHeight = Math.max(60, Math.min(stageHeight * 0.08, 80));
+        const btnWidth = Math.max(80, Math.min(stageWidth * 0.25, 120));
+        const btnSpacing = Math.max(10, stageWidth * 0.02);
+        const bottomMargin = Math.max(20, stageHeight * 0.03);
+        const btnY = stageHeight - btnHeight - bottomMargin;
+        const totalWidth = btnWidth * 3 + btnSpacing * 2;
+        const startX = (stageWidth - totalWidth) / 2;
+        const assistantBtnX = startX + btnWidth + btnSpacing;
+        const assistantBtnY = btnY;
+        
+        // 创建全屏遮挡层（半透明黑色）
+        this.assistantGuideMask = new Laya.Sprite();
+        this.assistantGuideMask.name = "assistantGuideMask";
+        this.assistantGuideMask.size(stageWidth, stageHeight);
+        this.assistantGuideMask.pos(0, 0);
+        
+        const graphics = this.assistantGuideMask.graphics;
+        graphics.clear();
+        
+        // 在助理按钮位置挖一个洞（绘制4个矩形：上下左右）
+        // 上方遮挡
+        graphics.drawRect(0, 0, stageWidth, assistantBtnY, "#000000");
+        // 下方遮挡
+        graphics.drawRect(0, assistantBtnY + btnHeight, stageWidth, stageHeight - (assistantBtnY + btnHeight), "#000000");
+        // 左侧遮挡
+        graphics.drawRect(0, assistantBtnY, assistantBtnX, btnHeight, "#000000");
+        // 右侧遮挡
+        graphics.drawRect(assistantBtnX + btnWidth, assistantBtnY, stageWidth - (assistantBtnX + btnWidth), btnHeight, "#000000");
+        
+        this.assistantGuideMask.alpha = 0.7;
+        this.assistantGuideMask.mouseEnabled = true;
+        this.assistantGuideMask.mouseThrough = false;
+        
+        // 添加到stage最上层（遮挡层）
+        Laya.stage.addChild(this.assistantGuideMask);
+        Laya.stage.setChildIndex(this.assistantGuideMask, Laya.stage.numChildren - 1);
+        
+        // 确保底部按钮在遮挡层上方（这样按钮可以正常点击）
+        if (this.bottomBar && this.bottomBar.parent) {
+            Laya.stage.setChildIndex(this.bottomBar, Laya.stage.numChildren - 1);
+        }
+        
+        // 创建提示文字（显示在屏幕上方）
+        this.assistantGuideTipLabel = new Laya.Text();
+        this.assistantGuideTipLabel.name = "assistantGuideTipLabel";
+        this.assistantGuideTipLabel.text = "来看看刚刚得到的蛋吧~";
+        this.assistantGuideTipLabel.fontSize = Math.max(24, Math.min(stageWidth * 0.06, 36));
+        this.assistantGuideTipLabel.color = "#000000";
+        this.assistantGuideTipLabel.width = stageWidth;
+        this.assistantGuideTipLabel.height = Math.max(40, stageHeight * 0.06);
+        this.assistantGuideTipLabel.align = "center";
+        this.assistantGuideTipLabel.valign = "middle";
+        // 位置：屏幕上方，距离顶部15%
+        this.assistantGuideTipLabel.pos(0, stageHeight * 0.15);
+        this.assistantGuideTipLabel.mouseEnabled = false;
+        this.assistantGuideTipLabel.mouseThrough = true;
+        
+        // 添加到stage最上层
+        Laya.stage.addChild(this.assistantGuideTipLabel);
+        Laya.stage.setChildIndex(this.assistantGuideTipLabel, Laya.stage.numChildren - 1);
+        
+        // 启动2秒自动关闭定时器
+        this.assistantGuideAutoCloseTimer = () => {
+            console.log("助理按钮指引2秒自动关闭定时器触发");
+            this.hideAssistantGuide();
+        };
+        Laya.timer.once(2000, this, this.assistantGuideAutoCloseTimer);
+        
+        console.log("助理按钮指引已显示，将在2秒后自动关闭");
+    }
+    
+    /**
+     * 隐藏助理按钮指引
+     */
+    private hideAssistantGuide(): void {
+        if (!this.isAssistantGuideActive) {
+            return;
+        }
+        
+        this.isAssistantGuideActive = false;
+        
+        // 清除自动关闭定时器
+        if (this.assistantGuideAutoCloseTimer) {
+            Laya.timer.clear(this, this.assistantGuideAutoCloseTimer);
+            this.assistantGuideAutoCloseTimer = null;
+        }
+        
+        // 移除遮挡层
+        if (this.assistantGuideMask) {
+            this.assistantGuideMask.removeSelf();
+            this.assistantGuideMask = null;
+        }
+        
+        // 移除提示文字
+        if (this.assistantGuideTipLabel) {
+            this.assistantGuideTipLabel.removeSelf();
+            this.assistantGuideTipLabel = null;
+        }
+        
+        console.log("助理按钮指引已隐藏");
+    }
+    
+    /**
+     * 检查并显示解锁指引
+     * 条件：在助理窗口内，1号助理未解锁
+     */
+    private checkAndShowUnlockGuide(): void {
+        if (!this.assistantWindow || this.isAssistantUnlockGuideActive) {
+            return;
+        }
+        
+        // 检查1号助理是否未解锁
+        const firstAssistant = this.assistants.find(a => a.id === 1);
+        if (firstAssistant && !firstAssistant.unlocked) {
+            console.log("检测到1号助理未解锁，显示解锁指引");
+            this.showUnlockGuide();
+        }
+    }
+    
+    /**
+     * 显示解锁指引
+     */
+    private showUnlockGuide(): void {
+        if (this.isAssistantUnlockGuideActive) {
+            return;
+        }
+        
+        this.isAssistantUnlockGuideActive = true;
+        const stageWidth = Laya.stage.width || 750;
+        const stageHeight = Laya.stage.height || 1334;
+        
+        // 找到1号助理的卡片
+        const scrollMask = this.assistantWindow.getChildByName("scrollMask") as Laya.Sprite;
+        if (!scrollMask) {
+            this.isAssistantUnlockGuideActive = false;
+            return;
+        }
+        
+        const cardsContainer = scrollMask.getChildByName("cardsContainer") as Laya.Sprite;
+        if (!cardsContainer) {
+            this.isAssistantUnlockGuideActive = false;
+            return;
+        }
+        
+        const firstCard = cardsContainer.getChildByName("assistantCard_1") as Laya.Sprite;
+        if (!firstCard) {
+            this.isAssistantUnlockGuideActive = false;
+            return;
+        }
+        
+        // 计算卡片在屏幕上的位置
+        const cardGlobalPos = firstCard.localToGlobal(new Laya.Point(0, 0));
+        const cardWidth = firstCard.width;
+        const cardHeight = firstCard.height;
+        
+        // 创建全屏遮挡层（半透明黑色）
+        this.assistantUnlockGuideMask = new Laya.Sprite();
+        this.assistantUnlockGuideMask.name = "assistantUnlockGuideMask";
+        this.assistantUnlockGuideMask.size(stageWidth, stageHeight);
+        this.assistantUnlockGuideMask.pos(0, 0);
+        
+        const graphics = this.assistantUnlockGuideMask.graphics;
+        graphics.clear();
+        
+        // 在1号助理卡片位置挖一个洞（绘制4个矩形：上下左右）
+        // 上方遮挡
+        graphics.drawRect(0, 0, stageWidth, cardGlobalPos.y, "#000000");
+        // 下方遮挡
+        graphics.drawRect(0, cardGlobalPos.y + cardHeight, stageWidth, stageHeight - (cardGlobalPos.y + cardHeight), "#000000");
+        // 左侧遮挡
+        graphics.drawRect(0, cardGlobalPos.y, cardGlobalPos.x, cardHeight, "#000000");
+        // 右侧遮挡
+        graphics.drawRect(cardGlobalPos.x + cardWidth, cardGlobalPos.y, stageWidth - (cardGlobalPos.x + cardWidth), cardHeight, "#000000");
+        
+        this.assistantUnlockGuideMask.alpha = 0.7;
+        this.assistantUnlockGuideMask.mouseEnabled = true;
+        this.assistantUnlockGuideMask.mouseThrough = false;
+        
+        // 添加到stage最上层
+        Laya.stage.addChild(this.assistantUnlockGuideMask);
+        Laya.stage.setChildIndex(this.assistantUnlockGuideMask, Laya.stage.numChildren - 1);
+        
+        // 确保助理窗口在遮挡层上方
+        if (this.assistantWindow && this.assistantWindow.parent) {
+            Laya.stage.setChildIndex(this.assistantWindow, Laya.stage.numChildren - 1);
+        }
+        
+        // 创建提示文字（显示在屏幕上方）
+        this.assistantUnlockGuideTipLabel = new Laya.Text();
+        this.assistantUnlockGuideTipLabel.name = "assistantUnlockGuideTipLabel";
+        this.assistantUnlockGuideTipLabel.text = "蛋开始动了……解锁看看！";
+        this.assistantUnlockGuideTipLabel.fontSize = Math.max(24, Math.min(stageWidth * 0.06, 36));
+        this.assistantUnlockGuideTipLabel.color = "#000000";
+        this.assistantUnlockGuideTipLabel.width = stageWidth;
+        this.assistantUnlockGuideTipLabel.height = Math.max(40, stageHeight * 0.06);
+        this.assistantUnlockGuideTipLabel.align = "center";
+        this.assistantUnlockGuideTipLabel.valign = "middle";
+        // 位置：屏幕上方，距离顶部15%
+        this.assistantUnlockGuideTipLabel.pos(0, stageHeight * 0.15);
+        this.assistantUnlockGuideTipLabel.mouseEnabled = false;
+        this.assistantUnlockGuideTipLabel.mouseThrough = true;
+        
+        // 添加到stage最上层
+        Laya.stage.addChild(this.assistantUnlockGuideTipLabel);
+        Laya.stage.setChildIndex(this.assistantUnlockGuideTipLabel, Laya.stage.numChildren - 1);
+        
+        // 启动2秒自动关闭定时器
+        this.assistantUnlockGuideAutoCloseTimer = () => {
+            console.log("解锁指引2秒自动关闭定时器触发");
+            this.hideUnlockGuide();
+        };
+        Laya.timer.once(2000, this, this.assistantUnlockGuideAutoCloseTimer);
+        
+        console.log("解锁指引已显示，将在2秒后自动关闭");
+    }
+    
+    /**
+     * 隐藏解锁指引
+     */
+    private hideUnlockGuide(): void {
+        if (!this.isAssistantUnlockGuideActive) {
+            return;
+        }
+        
+        this.isAssistantUnlockGuideActive = false;
+        
+        // 清除自动关闭定时器
+        if (this.assistantUnlockGuideAutoCloseTimer) {
+            Laya.timer.clear(this, this.assistantUnlockGuideAutoCloseTimer);
+            this.assistantUnlockGuideAutoCloseTimer = null;
+        }
+        
+        // 移除遮挡层
+        if (this.assistantUnlockGuideMask) {
+            this.assistantUnlockGuideMask.removeSelf();
+            this.assistantUnlockGuideMask = null;
+        }
+        
+        // 移除提示文字
+        if (this.assistantUnlockGuideTipLabel) {
+            this.assistantUnlockGuideTipLabel.removeSelf();
+            this.assistantUnlockGuideTipLabel = null;
+        }
+        
+        console.log("解锁指引已隐藏");
+    }
+    
+    /**
+     * 检查并显示升级指引
+     * 条件：1号助理已解锁，等级小于20，在助理窗口内
+     */
+    private checkAndShowUpgradeGuide(): void {
+        if (!this.assistantWindow || this.isAssistantUpgradeGuideActive) {
+            return;
+        }
+        
+        // 检查1号助理是否已解锁且等级小于20
+        const firstAssistant = this.assistants.find(a => a.id === 1);
+        if (firstAssistant && firstAssistant.unlocked && firstAssistant.level < 20) {
+            console.log("检测到1号助理已解锁且等级小于20，显示升级指引");
+            this.showUpgradeGuide();
+        }
+    }
+    
+    /**
+     * 显示升级指引
+     */
+    private showUpgradeGuide(): void {
+        if (this.isAssistantUpgradeGuideActive) {
+            return;
+        }
+        
+        this.isAssistantUpgradeGuideActive = true;
+        const stageWidth = Laya.stage.width || 750;
+        const stageHeight = Laya.stage.height || 1334;
+        
+        // 找到1号助理的卡片
+        const scrollMask = this.assistantWindow.getChildByName("scrollMask") as Laya.Sprite;
+        if (!scrollMask) {
+            this.isAssistantUpgradeGuideActive = false;
+            return;
+        }
+        
+        const cardsContainer = scrollMask.getChildByName("cardsContainer") as Laya.Sprite;
+        if (!cardsContainer) {
+            this.isAssistantUpgradeGuideActive = false;
+            return;
+        }
+        
+        const firstCard = cardsContainer.getChildByName("assistantCard_1") as Laya.Sprite;
+        if (!firstCard) {
+            this.isAssistantUpgradeGuideActive = false;
+            return;
+        }
+        
+        // 找到升级按钮
+        const actionBtn = firstCard.getChildByName("actionBtn") as Laya.Sprite;
+        if (!actionBtn) {
+            this.isAssistantUpgradeGuideActive = false;
+            return;
+        }
+        
+        // 计算按钮在屏幕上的位置
+        const btnGlobalPos = actionBtn.localToGlobal(new Laya.Point(0, 0));
+        const btnWidth = actionBtn.width;
+        const btnHeight = actionBtn.height;
+        
+        // 创建全屏遮挡层（半透明黑色）
+        this.assistantUpgradeGuideMask = new Laya.Sprite();
+        this.assistantUpgradeGuideMask.name = "assistantUpgradeGuideMask";
+        this.assistantUpgradeGuideMask.size(stageWidth, stageHeight);
+        this.assistantUpgradeGuideMask.pos(0, 0);
+        
+        const graphics = this.assistantUpgradeGuideMask.graphics;
+        graphics.clear();
+        
+        // 在升级按钮位置挖一个洞（绘制4个矩形：上下左右）
+        // 上方遮挡
+        graphics.drawRect(0, 0, stageWidth, btnGlobalPos.y, "#000000");
+        // 下方遮挡
+        graphics.drawRect(0, btnGlobalPos.y + btnHeight, stageWidth, stageHeight - (btnGlobalPos.y + btnHeight), "#000000");
+        // 左侧遮挡
+        graphics.drawRect(0, btnGlobalPos.y, btnGlobalPos.x, btnHeight, "#000000");
+        // 右侧遮挡
+        graphics.drawRect(btnGlobalPos.x + btnWidth, btnGlobalPos.y, stageWidth - (btnGlobalPos.x + btnWidth), btnHeight, "#000000");
+        
+        this.assistantUpgradeGuideMask.alpha = 0.7;
+        this.assistantUpgradeGuideMask.mouseEnabled = true;
+        this.assistantUpgradeGuideMask.mouseThrough = false;
+        
+        // 添加到stage最上层
+        Laya.stage.addChild(this.assistantUpgradeGuideMask);
+        Laya.stage.setChildIndex(this.assistantUpgradeGuideMask, Laya.stage.numChildren - 1);
+        
+        // 确保助理窗口在遮挡层上方
+        if (this.assistantWindow && this.assistantWindow.parent) {
+            Laya.stage.setChildIndex(this.assistantWindow, Laya.stage.numChildren - 1);
+        }
+        
+        // 创建提示文字（显示在屏幕上方）
+        this.assistantUpgradeGuideTipLabel = new Laya.Text();
+        this.assistantUpgradeGuideTipLabel.name = "assistantUpgradeGuideTipLabel";
+        this.assistantUpgradeGuideTipLabel.text = "升到20级有收益倍率加成哦~";
+        this.assistantUpgradeGuideTipLabel.fontSize = Math.max(24, Math.min(stageWidth * 0.06, 36));
+        this.assistantUpgradeGuideTipLabel.color = "#000000";
+        this.assistantUpgradeGuideTipLabel.width = stageWidth;
+        this.assistantUpgradeGuideTipLabel.height = Math.max(40, stageHeight * 0.06);
+        this.assistantUpgradeGuideTipLabel.align = "center";
+        this.assistantUpgradeGuideTipLabel.valign = "middle";
+        // 位置：屏幕上方，距离顶部15%
+        this.assistantUpgradeGuideTipLabel.pos(0, stageHeight * 0.15);
+        this.assistantUpgradeGuideTipLabel.mouseEnabled = false;
+        this.assistantUpgradeGuideTipLabel.mouseThrough = true;
+        
+        // 添加到stage最上层
+        Laya.stage.addChild(this.assistantUpgradeGuideTipLabel);
+        Laya.stage.setChildIndex(this.assistantUpgradeGuideTipLabel, Laya.stage.numChildren - 1);
+        
+        // 启动2秒自动关闭定时器
+        this.assistantUpgradeGuideAutoCloseTimer = () => {
+            console.log("升级指引2秒自动关闭定时器触发");
+            this.hideUpgradeGuide();
+        };
+        Laya.timer.once(2000, this, this.assistantUpgradeGuideAutoCloseTimer);
+        
+        console.log("升级指引已显示，将在2秒后自动关闭或点击升级按钮后关闭");
+    }
+    
+    /**
+     * 隐藏升级指引
+     */
+    private hideUpgradeGuide(): void {
+        if (!this.isAssistantUpgradeGuideActive) {
+            return;
+        }
+        
+        this.isAssistantUpgradeGuideActive = false;
+        
+        // 清除自动关闭定时器
+        if (this.assistantUpgradeGuideAutoCloseTimer) {
+            Laya.timer.clear(this, this.assistantUpgradeGuideAutoCloseTimer);
+            this.assistantUpgradeGuideAutoCloseTimer = null;
+        }
+        
+        // 移除遮挡层
+        if (this.assistantUpgradeGuideMask) {
+            this.assistantUpgradeGuideMask.removeSelf();
+            this.assistantUpgradeGuideMask = null;
+        }
+        
+        // 移除提示文字
+        if (this.assistantUpgradeGuideTipLabel) {
+            this.assistantUpgradeGuideTipLabel.removeSelf();
+            this.assistantUpgradeGuideTipLabel = null;
+        }
+        
+        console.log("升级指引已隐藏");
+    }
+    
+    /**
+     * 检查并显示升级按钮指引
+     * 条件：没有窗口打开，1号助理解锁，等级为1，金额能够升级
+     */
+    private checkAndShowUpgradeBtnGuide(): void {
+        // 如果已经显示过，不再显示
+        if (this.isUpgradeBtnGuideActive) {
+            return;
+        }
+        
+        // 检查是否有窗口打开
+        if (this.assistantWindow || this.settingsWindow || this.challengeWindow) {
+            return;
+        }
+        
+        // 检查1号助理解锁状态
+        const firstAssistant = this.assistants.find(a => a.id === 1);
+        if (!firstAssistant || !firstAssistant.unlocked) {
+            return;
+        }
+        
+        // 检查等级是否为1
+        if (this.playerLevel !== 1) {
+            return;
+        }
+        
+        // 检查金额是否能够升级
+        if (this.money < this.upgradeCost) {
+            return;
+        }
+        
+        console.log("检测到满足升级按钮指引条件，显示指引");
+        this.showUpgradeBtnGuide();
+    }
+    
+    /**
+     * 显示升级按钮指引
+     */
+    private showUpgradeBtnGuide(): void {
+        if (this.isUpgradeBtnGuideActive) {
+            return; // 已经显示，不重复显示
+        }
+        
+        this.isUpgradeBtnGuideActive = true;
+        const stageWidth = Laya.stage.width || 750;
+        const stageHeight = Laya.stage.height || 1334;
+        
+        // 计算升级按钮的位置和大小
+        const btnHeight = Math.max(60, Math.min(stageHeight * 0.08, 80));
+        const btnWidth = Math.max(80, Math.min(stageWidth * 0.25, 120));
+        const btnSpacing = Math.max(10, stageWidth * 0.02);
+        const bottomMargin = Math.max(20, stageHeight * 0.03);
+        const btnY = stageHeight - btnHeight - bottomMargin;
+        const totalWidth = btnWidth * 3 + btnSpacing * 2;
+        const startX = (stageWidth - totalWidth) / 2;
+        const upgradeBtnX = startX;
+        const upgradeBtnY = btnY;
+        
+        // 创建全屏遮挡层（半透明黑色）
+        this.upgradeBtnGuideMask = new Laya.Sprite();
+        this.upgradeBtnGuideMask.name = "upgradeBtnGuideMask";
+        this.upgradeBtnGuideMask.size(stageWidth, stageHeight);
+        this.upgradeBtnGuideMask.pos(0, 0);
+        
+        const graphics = this.upgradeBtnGuideMask.graphics;
+        graphics.clear();
+        
+        // 在升级按钮位置挖一个洞（绘制4个矩形：上下左右）
+        // 上方遮挡
+        graphics.drawRect(0, 0, stageWidth, upgradeBtnY, "#000000");
+        // 下方遮挡
+        graphics.drawRect(0, upgradeBtnY + btnHeight, stageWidth, stageHeight - (upgradeBtnY + btnHeight), "#000000");
+        // 左侧遮挡
+        graphics.drawRect(0, upgradeBtnY, upgradeBtnX, btnHeight, "#000000");
+        // 右侧遮挡
+        graphics.drawRect(upgradeBtnX + btnWidth, upgradeBtnY, stageWidth - (upgradeBtnX + btnWidth), btnHeight, "#000000");
+        
+        this.upgradeBtnGuideMask.alpha = 0.7;
+        this.upgradeBtnGuideMask.mouseEnabled = true;
+        this.upgradeBtnGuideMask.mouseThrough = false;
+        
+        // 添加到stage最上层
+        Laya.stage.addChild(this.upgradeBtnGuideMask);
+        Laya.stage.setChildIndex(this.upgradeBtnGuideMask, Laya.stage.numChildren - 1);
+        
+        // 确保底部按钮在遮挡层上方
+        if (this.bottomBar && this.bottomBar.parent) {
+            Laya.stage.setChildIndex(this.bottomBar, Laya.stage.numChildren - 1);
+        }
+        
+        // 创建提示文字（显示在屏幕上方）
+        this.upgradeBtnGuideTipLabel = new Laya.Text();
+        this.upgradeBtnGuideTipLabel.name = "upgradeBtnGuideTipLabel";
+        this.upgradeBtnGuideTipLabel.text = "升级可以提高点击收益";
+        this.upgradeBtnGuideTipLabel.fontSize = Math.max(24, Math.min(stageWidth * 0.06, 36));
+        this.upgradeBtnGuideTipLabel.color = "#000000";
+        this.upgradeBtnGuideTipLabel.width = stageWidth;
+        this.upgradeBtnGuideTipLabel.height = Math.max(40, stageHeight * 0.06);
+        this.upgradeBtnGuideTipLabel.align = "center";
+        this.upgradeBtnGuideTipLabel.valign = "middle";
+        // 位置：屏幕上方，距离顶部15%
+        this.upgradeBtnGuideTipLabel.pos(0, stageHeight * 0.15);
+        this.upgradeBtnGuideTipLabel.mouseEnabled = false;
+        this.upgradeBtnGuideTipLabel.mouseThrough = true;
+        
+        // 添加到stage最上层
+        Laya.stage.addChild(this.upgradeBtnGuideTipLabel);
+        Laya.stage.setChildIndex(this.upgradeBtnGuideTipLabel, Laya.stage.numChildren - 1);
+        
+        // 启动2秒自动关闭定时器
+        this.upgradeBtnGuideAutoCloseTimer = () => {
+            console.log("升级按钮指引2秒自动关闭定时器触发");
+            this.hideUpgradeBtnGuide();
+        };
+        Laya.timer.once(2000, this, this.upgradeBtnGuideAutoCloseTimer);
+        
+        console.log("升级按钮指引已显示，将在2秒后自动关闭或点击升级按钮后关闭");
+    }
+    
+    /**
+     * 隐藏升级按钮指引
+     */
+    private hideUpgradeBtnGuide(): void {
+        if (!this.isUpgradeBtnGuideActive) {
+            return;
+        }
+        
+        this.isUpgradeBtnGuideActive = false;
+        
+        // 清除自动关闭定时器
+        if (this.upgradeBtnGuideAutoCloseTimer) {
+            Laya.timer.clear(this, this.upgradeBtnGuideAutoCloseTimer);
+            this.upgradeBtnGuideAutoCloseTimer = null;
+        }
+        
+        // 移除遮挡层
+        if (this.upgradeBtnGuideMask) {
+            this.upgradeBtnGuideMask.removeSelf();
+            this.upgradeBtnGuideMask = null;
+        }
+        
+        // 移除提示文字
+        if (this.upgradeBtnGuideTipLabel) {
+            this.upgradeBtnGuideTipLabel.removeSelf();
+            this.upgradeBtnGuideTipLabel = null;
+        }
+        
+        console.log("升级按钮指引已隐藏");
+    }
+    
+    /**
+     * 检查并显示挑战按钮指引
+     * 条件：没有窗口打开，点击收益达到500以上，且1号挑战未解锁
+     */
+    private checkAndShowChallengeBtnGuide(): void {
+        // 如果已经显示过，不再显示
+        if (this.isChallengeBtnGuideActive) {
+            return;
+        }
+        
+        // 检查是否有窗口打开（只有主页面，没有窗口打开时才显示）
+        if (this.assistantWindow || this.settingsWindow || this.challengeWindow) {
+            return;
+        }
+        
+        // 检查点击收益是否达到500以上
+        const clickReward = this.getClickReward();
+        if (clickReward < 500) {
+            return;
+        }
+        
+        // 检查1号挑战是否未解锁（1号挑战对应1号助理）
+        const firstChallenge = this.challenges.find(c => c.id === 1);
+        if (!firstChallenge || firstChallenge.completed) {
+            return;
+        }
+        
+        // 检查1号助理是否已解锁（挑战解锁条件）
+        const firstAssistant = this.assistants.find(a => a.id === 1);
+        if (!firstAssistant || !firstAssistant.unlocked) {
+            return;
+        }
+        
+        console.log("检测到满足挑战按钮指引条件，显示指引");
+        this.showChallengeBtnGuide();
+    }
+    
+    /**
+     * 显示挑战按钮指引
+     */
+    private showChallengeBtnGuide(): void {
+        if (this.isChallengeBtnGuideActive) {
+            return; // 已经显示，不重复显示
+        }
+        
+        this.isChallengeBtnGuideActive = true;
+        const stageWidth = Laya.stage.width || 750;
+        const stageHeight = Laya.stage.height || 1334;
+        
+        // 计算挑战按钮的位置和大小
+        const btnHeight = Math.max(60, Math.min(stageHeight * 0.08, 80));
+        const btnWidth = Math.max(80, Math.min(stageWidth * 0.25, 120));
+        const btnSpacing = Math.max(10, stageWidth * 0.02);
+        const bottomMargin = Math.max(20, stageHeight * 0.03);
+        const btnY = stageHeight - btnHeight - bottomMargin;
+        const totalWidth = btnWidth * 3 + btnSpacing * 2;
+        const startX = (stageWidth - totalWidth) / 2;
+        const challengeBtnX = startX + (btnWidth + btnSpacing) * 2;
+        const challengeBtnY = btnY;
+        
+        // 创建全屏遮挡层（半透明黑色）
+        this.challengeBtnGuideMask = new Laya.Sprite();
+        this.challengeBtnGuideMask.name = "challengeBtnGuideMask";
+        this.challengeBtnGuideMask.size(stageWidth, stageHeight);
+        this.challengeBtnGuideMask.pos(0, 0);
+        
+        const graphics = this.challengeBtnGuideMask.graphics;
+        graphics.clear();
+        
+        // 在挑战按钮位置挖一个洞（绘制4个矩形：上下左右）
+        // 上方遮挡
+        graphics.drawRect(0, 0, stageWidth, challengeBtnY, "#000000");
+        // 下方遮挡
+        graphics.drawRect(0, challengeBtnY + btnHeight, stageWidth, stageHeight - (challengeBtnY + btnHeight), "#000000");
+        // 左侧遮挡
+        graphics.drawRect(0, challengeBtnY, challengeBtnX, btnHeight, "#000000");
+        // 右侧遮挡
+        graphics.drawRect(challengeBtnX + btnWidth, challengeBtnY, stageWidth - (challengeBtnX + btnWidth), btnHeight, "#000000");
+        
+        this.challengeBtnGuideMask.alpha = 0.7;
+        this.challengeBtnGuideMask.mouseEnabled = true;
+        this.challengeBtnGuideMask.mouseThrough = false;
+        
+        // 添加到stage最上层
+        Laya.stage.addChild(this.challengeBtnGuideMask);
+        Laya.stage.setChildIndex(this.challengeBtnGuideMask, Laya.stage.numChildren - 1);
+        
+        // 确保底部按钮在遮挡层上方
+        if (this.bottomBar && this.bottomBar.parent) {
+            Laya.stage.setChildIndex(this.bottomBar, Laya.stage.numChildren - 1);
+        }
+        
+        // 创建提示文字（显示在屏幕上方）
+        this.challengeBtnGuideTipLabel = new Laya.Text();
+        this.challengeBtnGuideTipLabel.name = "challengeBtnGuideTipLabel";
+        this.challengeBtnGuideTipLabel.text = "加油，通过助理的试炼！";
+        this.challengeBtnGuideTipLabel.fontSize = Math.max(24, Math.min(stageWidth * 0.06, 36));
+        this.challengeBtnGuideTipLabel.color = "#000000";
+        this.challengeBtnGuideTipLabel.width = stageWidth;
+        this.challengeBtnGuideTipLabel.height = Math.max(40, stageHeight * 0.06);
+        this.challengeBtnGuideTipLabel.align = "center";
+        this.challengeBtnGuideTipLabel.valign = "middle";
+        // 位置：屏幕上方，距离顶部15%
+        this.challengeBtnGuideTipLabel.pos(0, stageHeight * 0.15);
+        this.challengeBtnGuideTipLabel.mouseEnabled = false;
+        this.challengeBtnGuideTipLabel.mouseThrough = true;
+        
+        // 添加到stage最上层
+        Laya.stage.addChild(this.challengeBtnGuideTipLabel);
+        Laya.stage.setChildIndex(this.challengeBtnGuideTipLabel, Laya.stage.numChildren - 1);
+        
+        // 启动2秒自动关闭定时器
+        this.challengeBtnGuideAutoCloseTimer = () => {
+            console.log("挑战按钮指引2秒自动关闭定时器触发");
+            this.hideChallengeBtnGuide();
+        };
+        Laya.timer.once(2000, this, this.challengeBtnGuideAutoCloseTimer);
+        
+        console.log("挑战按钮指引已显示，将在2秒后自动关闭或点击挑战按钮后关闭");
+    }
+    
+    /**
+     * 隐藏挑战按钮指引
+     */
+    private hideChallengeBtnGuide(): void {
+        if (!this.isChallengeBtnGuideActive) {
+            return;
+        }
+        
+        this.isChallengeBtnGuideActive = false;
+        
+        // 清除自动关闭定时器
+        if (this.challengeBtnGuideAutoCloseTimer) {
+            Laya.timer.clear(this, this.challengeBtnGuideAutoCloseTimer);
+            this.challengeBtnGuideAutoCloseTimer = null;
+        }
+        
+        // 移除遮挡层
+        if (this.challengeBtnGuideMask) {
+            this.challengeBtnGuideMask.removeSelf();
+            this.challengeBtnGuideMask = null;
+        }
+        
+        // 移除提示文字
+        if (this.challengeBtnGuideTipLabel) {
+            this.challengeBtnGuideTipLabel.removeSelf();
+            this.challengeBtnGuideTipLabel = null;
+        }
+        
+        console.log("挑战按钮指引已隐藏");
+    }
+    
+    /**
+     * 检查并显示挑战窗口指引
+     * 条件：1号挑战通过，且关闭success图片后（不考虑是否有窗口打开）
+     */
+    private checkAndShowChallengeWindowGuide(): void {
+        // 如果已经显示过，不再显示
+        if (this.isChallengeWindowGuideActive) {
+            return;
+        }
+        
+        // 检查1号挑战是否已通过
+        const firstChallenge = this.challenges.find(c => c.id === 1);
+        if (!firstChallenge || !firstChallenge.completed) {
+            return;
+        }
+        
+        console.log("检测到满足挑战窗口指引条件，显示指引");
+        this.showChallengeWindowGuide();
+    }
+    
+    /**
+     * 显示挑战窗口指引
+     */
+    private showChallengeWindowGuide(): void {
+        if (this.isChallengeWindowGuideActive) {
+            return; // 已经显示，不重复显示
+        }
+        
+        this.isChallengeWindowGuideActive = true;
+        const stageWidth = Laya.stage.width || 750;
+        const stageHeight = Laya.stage.height || 1334;
+        
+        // 创建全屏遮挡层（半透明黑色）
+        this.challengeWindowGuideMask = new Laya.Sprite();
+        this.challengeWindowGuideMask.name = "challengeWindowGuideMask";
+        this.challengeWindowGuideMask.size(stageWidth, stageHeight);
+        this.challengeWindowGuideMask.pos(0, 0);
+        
+        const graphics = this.challengeWindowGuideMask.graphics;
+        graphics.clear();
+        
+        // 绘制全屏半透明黑色
+        graphics.drawRect(0, 0, stageWidth, stageHeight, "#000000");
+        this.challengeWindowGuideMask.alpha = 0.7;
+        this.challengeWindowGuideMask.mouseEnabled = true;
+        this.challengeWindowGuideMask.mouseThrough = false;
+        
+        // 添加点击事件：点击任意处关闭指引
+        this.challengeWindowGuideMask.on(Laya.Event.CLICK, this, this.hideChallengeWindowGuide);
+        
+        // 添加到stage最上层
+        Laya.stage.addChild(this.challengeWindowGuideMask);
+        Laya.stage.setChildIndex(this.challengeWindowGuideMask, Laya.stage.numChildren - 1);
+        
+        // 创建提示文字（显示在屏幕中央）
+        this.challengeWindowGuideTipLabel = new Laya.Text();
+        this.challengeWindowGuideTipLabel.name = "challengeWindowGuideTipLabel";
+        this.challengeWindowGuideTipLabel.text = "努力通过所有试炼吧~";
+        this.challengeWindowGuideTipLabel.fontSize = Math.max(24, Math.min(stageWidth * 0.06, 36));
+        this.challengeWindowGuideTipLabel.color = "#000000";
+        this.challengeWindowGuideTipLabel.width = stageWidth;
+        this.challengeWindowGuideTipLabel.height = Math.max(40, stageHeight * 0.06);
+        this.challengeWindowGuideTipLabel.align = "center";
+        this.challengeWindowGuideTipLabel.valign = "middle";
+        // 位置：屏幕中央
+        this.challengeWindowGuideTipLabel.pos(0, (stageHeight - this.challengeWindowGuideTipLabel.height) / 2);
+        this.challengeWindowGuideTipLabel.mouseEnabled = false;
+        this.challengeWindowGuideTipLabel.mouseThrough = true;
+        
+        // 添加到stage最上层
+        Laya.stage.addChild(this.challengeWindowGuideTipLabel);
+        Laya.stage.setChildIndex(this.challengeWindowGuideTipLabel, Laya.stage.numChildren - 1);
+        
+        // 启动2秒自动关闭定时器
+        this.challengeWindowGuideAutoCloseTimer = () => {
+            console.log("挑战窗口指引2秒自动关闭定时器触发");
+            this.hideChallengeWindowGuide();
+        };
+        Laya.timer.once(2000, this, this.challengeWindowGuideAutoCloseTimer);
+        
+        console.log("挑战窗口指引已显示，将在2秒后自动关闭或点击任意处关闭");
+    }
+    
+    /**
+     * 隐藏挑战窗口指引
+     */
+    private hideChallengeWindowGuide(): void {
+        if (!this.isChallengeWindowGuideActive) {
+            return;
+        }
+        
+        this.isChallengeWindowGuideActive = false;
+        
+        // 清除自动关闭定时器
+        if (this.challengeWindowGuideAutoCloseTimer) {
+            Laya.timer.clear(this, this.challengeWindowGuideAutoCloseTimer);
+            this.challengeWindowGuideAutoCloseTimer = null;
+        }
+        
+        // 移除遮挡层
+        if (this.challengeWindowGuideMask) {
+            this.challengeWindowGuideMask.off(Laya.Event.CLICK, this, this.hideChallengeWindowGuide);
+            this.challengeWindowGuideMask.removeSelf();
+            this.challengeWindowGuideMask = null;
+        }
+        
+        // 移除提示文字
+        if (this.challengeWindowGuideTipLabel) {
+            this.challengeWindowGuideTipLabel.removeSelf();
+            this.challengeWindowGuideTipLabel = null;
+        }
+        
+        console.log("挑战窗口指引已隐藏");
     }
 
     /**
@@ -1490,6 +2644,11 @@ export class Main extends Laya.Script {
      * 升级按钮点击事件
      */
     private onUpgradeClick(): void {
+        // 如果升级按钮指引激活，点击后关闭指引
+        if (this.isUpgradeBtnGuideActive) {
+            this.hideUpgradeBtnGuide();
+        }
+        
         // 检查是否有足够的金币
         if (this.money >= this.upgradeCost) {
             // 消耗金币
@@ -1499,6 +2658,11 @@ export class Main extends Laya.Script {
             // 升级
             this.playerLevel++;
             this.levelLabel.text = this.playerLevel + "级";
+            
+            // 如果升级后等级不再是1，关闭升级按钮指引
+            if (this.playerLevel !== 1 && this.isUpgradeBtnGuideActive) {
+                this.hideUpgradeBtnGuide();
+            }
             
             // 提高单次点击金币获取量基础值：每次增加当前值的3%
             // 升级提升的是收益本金，倍率是额外加成
@@ -1512,6 +2676,10 @@ export class Main extends Laya.Script {
             // 更新倍率显示和秒赚显示
             this.updateMultiplierDisplay();
             this.updatePerSecondDisplay();
+            
+            // 检查是否需要显示挑战按钮指引（点击收益变化可能影响是否达到500）
+            this.checkAndShowChallengeBtnGuide();
+            
             console.log("升级成功！当前等级:", this.playerLevel, "点击收益基础值:", this.clickRewardBase, "倍率:", this.clickMultiplier, "实际收益:", this.getClickReward(), "下次升级需要:", this.upgradeCost);
             // 数据会通过定时保存自动保存，无需手动调用
         } else {
@@ -1525,6 +2693,10 @@ export class Main extends Laya.Script {
      * 挑战按钮点击事件
      */
     private onChallengeClick(): void {
+        // 如果挑战按钮指引激活，点击后关闭指引
+        if (this.isChallengeBtnGuideActive) {
+            this.hideChallengeBtnGuide();
+        }
         console.log("点击了挑战按钮");
         // 如果窗口已存在，先删除
         if (this.challengeWindow) {
@@ -1541,6 +2713,10 @@ export class Main extends Laya.Script {
      * 助理按钮点击事件
      */
     private onAssistantClick(): void {
+        // 如果助理按钮指引激活，点击后关闭指引
+        if (this.isAssistantGuideActive) {
+            this.hideAssistantGuide();
+        }
         console.log("点击了助理按钮");
         // 如果窗口已存在，先删除
         if (this.assistantWindow) {
@@ -1733,6 +2909,11 @@ export class Main extends Laya.Script {
         this.createAssistantCards(panel, cardsContainer, windowWidth, cardsAreaHeight);
         
         console.log("创建助理窗口（手机端适配），位置:", windowX, windowY, "尺寸:", windowWidth, windowHeight);
+        
+        // 检查是否需要显示解锁指引（延迟一帧，确保卡片已创建）
+        Laya.timer.frameOnce(1, this, () => {
+            this.checkAndShowUnlockGuide();
+        });
     }
     
     /**
@@ -2073,8 +3254,17 @@ export class Main extends Laya.Script {
                 this.updatePerSecondDisplay(); // 更新秒赚显示
                 this.showPopup("解锁成功！", "center", "#00ff00");
                 console.log("解锁助理:", assistant.name, "当前等级:", assistant.level);
+                
+                // 如果正在显示解锁指引，关闭它
+                if (this.isAssistantUnlockGuideActive) {
+                    this.hideUnlockGuide();
+                }
+                
                 // 刷新窗口
                 this.refreshAssistantWindow();
+                
+                // 更新底部按钮显示状态（1号助理解锁后显示所有按钮）
+                this.updateBottomButtonsVisibility();
                 // 更新桌子上方的助理图片显示
                 this.updateAssistantAfterImage();
                 // 全屏显示after图片
@@ -2105,6 +3295,11 @@ export class Main extends Laya.Script {
                 this.updatePerSecondDisplay(); // 更新秒赚显示
                 // 删除升级成功弹窗
                 console.log("升级助理:", assistant.name, "当前等级:", assistant.level);
+                
+                // 如果正在显示升级指引，关闭它
+                if (this.isAssistantUpgradeGuideActive) {
+                    this.hideUpgradeGuide();
+                }
                 
                 // 如果正好升级到20级，显示after图片
                 if (assistant.level === 20 && previousLevel === 19) {
@@ -2318,6 +3513,10 @@ export class Main extends Laya.Script {
      * 关闭助理窗口
      */
     private closeAssistantWindow(): void {
+        // 关闭窗口后，检查是否需要显示升级按钮指引
+        Laya.timer.frameOnce(1, this, () => {
+            this.checkAndShowUpgradeBtnGuide();
+        });
         if (this.assistantWindow) {
             this.assistantWindow.removeSelf();
             this.assistantWindow = null;
@@ -2685,6 +3884,10 @@ export class Main extends Laya.Script {
      * 关闭设置窗口
      */
     private closeSettingsWindow(): void {
+        // 关闭窗口后，检查是否需要显示升级按钮指引
+        Laya.timer.frameOnce(1, this, () => {
+            this.checkAndShowUpgradeBtnGuide();
+        });
         if (this.settingsWindow) {
             this.settingsWindow.removeSelf();
             this.settingsWindow = null;
@@ -3188,6 +4391,11 @@ export class Main extends Laya.Script {
      * 关闭挑战窗口
      */
     private closeChallengeWindow(): void {
+        // 关闭窗口后，检查是否需要显示升级按钮指引和挑战按钮指引
+        Laya.timer.frameOnce(1, this, () => {
+            this.checkAndShowUpgradeBtnGuide();
+            this.checkAndShowChallengeBtnGuide();
+        });
         if (this.challengeWindow) {
             this.challengeWindow.removeSelf();
             this.challengeWindow = null;
@@ -3228,6 +4436,22 @@ export class Main extends Laya.Script {
             const clickX = e.stageX;
             const clickY = e.stageY;
             
+            // 如果新手指引激活，检查是否点击在中间可点击区域
+            if (this.isNewbieGuideActive) {
+                const target = e.target as Laya.Sprite;
+                // 如果点击的是新手指引的可点击区域，触发收益（不立即关闭，等金币达到1500或2秒后自动关闭）
+                if (this.newbieGuideClickArea && (target === this.newbieGuideClickArea || this.newbieGuideClickArea.contains(target))) {
+                    // 触发正常的点击收益逻辑
+                    this.handleClickReward();
+                    // 检查金币是否达到1500，如果达到则关闭指引
+                    this.checkNewbieGuideCloseCondition();
+                    return;
+                } else {
+                    // 点击了其他区域（被遮挡层拦截），不处理
+                    return;
+                }
+            }
+            
             // 检查是否点击在窗口上
             const target = e.target as Laya.Sprite;
             if (this.assistantWindow && (target === this.assistantWindow || this.assistantWindow.contains(target))) {
@@ -3253,7 +4477,17 @@ export class Main extends Laya.Script {
             const isOnButton = this.isPointOnButton(clickX, clickY);
             
             if (!isOnButton) {
-                // 点击非按钮区域，增加金钱（使用当前点击收益：基础值 * 倍率）
+                // 点击非按钮区域，触发点击收益
+                this.handleClickReward();
+            }
+        });
+    }
+    
+    /**
+     * 处理点击收益（增加金钱、显示弹窗、显示动画等）
+     */
+    private handleClickReward(): void {
+        // 增加金钱（使用当前点击收益：基础值 * 倍率）
                 this.money += this.getClickReward();
                 this.updateMoneyDisplay();
                 
@@ -3273,8 +4507,6 @@ export class Main extends Laya.Script {
                 
                 console.log("点击增加金钱:", this.getClickReward(), "当前金钱:", this.money);
                 // 数据会通过定时保存自动保存，无需手动调用
-            }
-        });
     }
 
     /**
@@ -3458,6 +4690,18 @@ export class Main extends Laya.Script {
         }
         // 同时更新升级按钮的颜色提示
         this.updateUpgradeCostDisplay();
+        
+        // 检查新手指引关闭条件（金币达到1500）
+        this.checkNewbieGuideCloseCondition();
+        
+        // 更新底部按钮显示状态
+        this.updateBottomButtonsVisibility();
+        
+        // 检查是否需要显示升级按钮指引（金币变化可能影响是否能够升级）
+        this.checkAndShowUpgradeBtnGuide();
+        
+        // 检查是否需要显示挑战按钮指引（点击收益变化可能影响是否达到500）
+        this.checkAndShowChallengeBtnGuide();
     }
 
     /**
@@ -4391,6 +5635,8 @@ export class Main extends Laya.Script {
      * @param assistantId 助理ID
      */
     private showFullScreenAfterImage(assistantId: number): void {
+        // 清除当前挑战ID（这是助理图片，不是挑战success图片）
+        this.currentChallengeId = 0;
         // 如果已有全屏图片正在显示，先移除
         if (this.fullScreenAfterImage) {
             // 停止所有Tween动画
@@ -4466,6 +5712,8 @@ export class Main extends Laya.Script {
      * @param customText 自定义文字（显示在图片上方）
      */
     private showFullScreenAfterImageWithText(assistantId: number, customText: string): void {
+        // 清除当前挑战ID（这是助理图片，不是挑战success图片）
+        this.currentChallengeId = 0;
         // 如果已有全屏图片正在显示，先移除
         if (this.fullScreenAfterImage) {
             // 停止所有Tween动画
@@ -4852,6 +6100,9 @@ export class Main extends Laya.Script {
      * @param multiplierBonusPercent 倍率加成百分比值
      */
     private showFullScreenSuccessImage(challengeId: number, multiplierBonusPercent: number): void {
+        // 记录当前显示的挑战ID
+        this.currentChallengeId = challengeId;
+        
         // 如果已有全屏图片正在显示，先移除
         if (this.fullScreenAfterImage) {
             // 停止所有Tween动画
@@ -5046,6 +6297,30 @@ export class Main extends Laya.Script {
      * 隐藏全屏after图片（点击后调用）
      */
     private hideFullScreenAfterImage(): void {
+        // 保存当前挑战ID（在清除之前）
+        const closedChallengeId = this.currentChallengeId;
+        
+        // 清除当前挑战ID
+        this.currentChallengeId = 0;
+        
+        // 检查是否需要显示升级指引（解锁完成且关闭助理图片后）
+        // 注意：升级指引只在助理窗口内显示，所以这里检查的是助理图片关闭
+        if (closedChallengeId === 0) {
+            console.log("这是助理图片关闭，检查升级指引");
+            // 这是助理图片关闭，检查升级指引
+            Laya.timer.frameOnce(1, this, () => {
+                this.checkAndShowUpgradeGuide();
+            });
+        }
+        
+        // 检查是否需要显示挑战窗口指引（只有1号挑战的success图片关闭时才需要指引）
+        if (closedChallengeId === 1) {
+            console.log("这是1号挑战的success图片关闭，检查挑战窗口指引");
+            // 这是1号挑战的success图片关闭，检查挑战窗口指引
+            Laya.timer.frameOnce(1, this, () => {
+                this.checkAndShowChallengeWindowGuide();
+            });
+        }
         if (this.fullScreenAfterImage && !this.fullScreenAfterImage.destroyed) {
             // 停止所有Tween动画
             Laya.Tween.clearAll(this.fullScreenAfterImage);
