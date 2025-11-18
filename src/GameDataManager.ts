@@ -1300,16 +1300,14 @@ export class GameDataManager {
         soundEnabled?: boolean,
         musicEnabled?: boolean
     ): any {
-        return {
+        const result: any = {
             playerInfo: {
                 playerLevel: playerLevel,
                 money: money,
                 clickRewardBase: clickRewardBase,
                 clickMultiplier: clickMultiplier,
                 upgradeCost: upgradeCost,
-                trainingCount: trainingCount,
-                soundEnabled: soundEnabled !== undefined ? soundEnabled : true,
-                musicEnabled: musicEnabled !== undefined ? musicEnabled : true
+                trainingCount: trainingCount
             },
             assistants: assistants.map(a => ({
                 id: a.id,
@@ -1321,6 +1319,19 @@ export class GameDataManager {
                 completed: c.completed
             }))
         };
+        
+        // 添加settings字段（如果提供了设置项）
+        if (soundEnabled !== undefined || musicEnabled !== undefined) {
+            result.settings = {};
+            if (soundEnabled !== undefined) {
+                result.settings.soundEnabled = soundEnabled;
+            }
+            if (musicEnabled !== undefined) {
+                result.settings.musicEnabled = musicEnabled;
+            }
+        }
+        
+        return result;
     }
     
     /**
@@ -1340,8 +1351,10 @@ export class GameDataManager {
         clickMultiplier: number,
         upgradeCost: number,
         trainingCount: number,
-        soundEnabled?: boolean,
-        musicEnabled?: boolean,
+        settings?: {
+            soundEnabled?: boolean,
+            musicEnabled?: boolean
+        },
         lastUpdateTime?: string
     } | null {
         if (!apiData) {
@@ -1379,10 +1392,17 @@ export class GameDataManager {
                 });
             }
             
-            // 返回玩家信息，包含lastUpdateTime
+            // 返回玩家信息，包含lastUpdateTime和settings
             const result: any = playerInfo || null;
-            if (result && apiData.lastUpdateTime) {
-                result.lastUpdateTime = apiData.lastUpdateTime;
+            if (result) {
+                // 添加lastUpdateTime
+                if (apiData.lastUpdateTime) {
+                    result.lastUpdateTime = apiData.lastUpdateTime;
+                }
+                // 添加settings（如果存在）
+                if (apiData.settings) {
+                    result.settings = apiData.settings;
+                }
             }
             return result;
         } catch (error) {

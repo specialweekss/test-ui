@@ -2085,17 +2085,17 @@ export class Main extends Laya.Script {
     
     /**
      * 检查并显示升级指引
-     * 条件：1号助理已解锁，等级小于20，在助理窗口内
+     * 条件：1号助理已解锁，等级小于10，在助理窗口内
      */
     private checkAndShowUpgradeGuide(): void {
         if (!this.assistantWindow || this.isAssistantUpgradeGuideActive) {
             return;
         }
         
-        // 检查1号助理是否已解锁且等级小于20
+        // 检查1号助理是否已解锁且等级小于10
         const firstAssistant = this.assistants.find(a => a.id === 1);
-        if (firstAssistant && firstAssistant.unlocked && firstAssistant.level < 20) {
-            console.log("检测到1号助理已解锁且等级小于20，显示升级指引");
+        if (firstAssistant && firstAssistant.unlocked && firstAssistant.level < 10) {
+            console.log("检测到1号助理已解锁且等级小于10，显示升级指引");
             this.showUpgradeGuide();
         }
     }
@@ -2131,40 +2131,22 @@ export class Main extends Laya.Script {
             return;
         }
         
-        // 找到升级按钮
-        const actionBtn = firstCard.getChildByName("actionBtn") as Laya.Sprite;
-        if (!actionBtn) {
-            this.isAssistantUpgradeGuideActive = false;
-            return;
-        }
-        
-        // 计算按钮在屏幕上的位置
-        const btnGlobalPos = actionBtn.localToGlobal(new Laya.Point(0, 0));
-        const btnWidth = actionBtn.width;
-        const btnHeight = actionBtn.height;
-        
         // 创建全屏遮挡层（半透明黑色）
         this.assistantUpgradeGuideMask = new Laya.Sprite();
         this.assistantUpgradeGuideMask.name = "assistantUpgradeGuideMask";
         this.assistantUpgradeGuideMask.size(stageWidth, stageHeight);
         this.assistantUpgradeGuideMask.pos(0, 0);
         
-        const graphics = this.assistantUpgradeGuideMask.graphics;
-        graphics.clear();
-        
-        // 在升级按钮位置挖一个洞（绘制4个矩形：上下左右）
-        // 上方遮挡
-        graphics.drawRect(0, 0, stageWidth, btnGlobalPos.y, "#000000");
-        // 下方遮挡
-        graphics.drawRect(0, btnGlobalPos.y + btnHeight, stageWidth, stageHeight - (btnGlobalPos.y + btnHeight), "#000000");
-        // 左侧遮挡
-        graphics.drawRect(0, btnGlobalPos.y, btnGlobalPos.x, btnHeight, "#000000");
-        // 右侧遮挡
-        graphics.drawRect(btnGlobalPos.x + btnWidth, btnGlobalPos.y, stageWidth - (btnGlobalPos.x + btnWidth), btnHeight, "#000000");
+        // 绘制全屏遮罩
+        this.assistantUpgradeGuideMask.graphics.clear();
+        this.assistantUpgradeGuideMask.graphics.drawRect(0, 0, stageWidth, stageHeight, "#000000");
         
         this.assistantUpgradeGuideMask.alpha = 0.7;
         this.assistantUpgradeGuideMask.mouseEnabled = true;
         this.assistantUpgradeGuideMask.mouseThrough = false;
+        
+        // 添加点击事件：点击遮罩任意位置关闭指引
+        this.assistantUpgradeGuideMask.on(Laya.Event.CLICK, this, this.onUpgradeGuideMaskClick);
         
         // 添加到stage最上层
         Laya.stage.addChild(this.assistantUpgradeGuideMask);
@@ -2201,7 +2183,16 @@ export class Main extends Laya.Script {
         };
         Laya.timer.once(2000, this, this.assistantUpgradeGuideAutoCloseTimer);
         
-        console.log("升级指引已显示，将在2秒后自动关闭或点击升级按钮后关闭");
+        console.log("升级指引已显示，将在2秒后自动关闭或点击屏幕任意位置关闭");
+    }
+    
+    /**
+     * 升级指引遮罩点击事件处理
+     */
+    private onUpgradeGuideMaskClick(): void {
+        // 播放点击音效
+        this.playClickSoundEffect();
+        this.hideUpgradeGuide();
     }
     
     /**
@@ -2222,6 +2213,8 @@ export class Main extends Laya.Script {
         
         // 移除遮挡层
         if (this.assistantUpgradeGuideMask) {
+            // 移除点击事件监听
+            this.assistantUpgradeGuideMask.off(Laya.Event.CLICK, this, this.onUpgradeGuideMaskClick);
             this.assistantUpgradeGuideMask.removeSelf();
             this.assistantUpgradeGuideMask = null;
         }
@@ -5442,15 +5435,17 @@ export class Main extends Laya.Script {
                     this.upgradeCost = playerInfo.upgradeCost || this.upgradeCost;
                     this.trainingCount = playerInfo.trainingCount || this.trainingCount;
                     
-                    // 恢复音效和背景音乐开关（如果存在）
-                    if (playerInfo.soundEnabled !== undefined) {
-                        this.soundEnabled = playerInfo.soundEnabled;
-                    }
-                    if (playerInfo.musicEnabled !== undefined) {
-                        this.musicEnabled = playerInfo.musicEnabled;
-                        // 如果背景音乐开关关闭，暂停背景音乐
-                        if (!this.musicEnabled && this.backgroundMusic) {
-                            this.pauseBackgroundMusic();
+                    // 恢复音效和背景音乐开关（从settings字段读取）
+                    if (playerInfo.settings) {
+                        if (playerInfo.settings.soundEnabled !== undefined) {
+                            this.soundEnabled = playerInfo.settings.soundEnabled;
+                        }
+                        if (playerInfo.settings.musicEnabled !== undefined) {
+                            this.musicEnabled = playerInfo.settings.musicEnabled;
+                            // 如果背景音乐开关关闭，暂停背景音乐
+                            if (!this.musicEnabled && this.backgroundMusic) {
+                                this.pauseBackgroundMusic();
+                            }
                         }
                     }
                     
@@ -6614,7 +6609,7 @@ export class Main extends Laya.Script {
         });
         
         // 设置音乐路径
-        const musicUrl = "https://specialweek.online/resources/music/back.MP3";
+        const musicUrl = this.getServerResourceUrl("resources/music/back.MP3");
         this.backgroundMusic.src = musicUrl;
         this.backgroundMusic.loop = true; // 循环播放
         this.backgroundMusic.volume = 0.5; // 音量设置为50%
@@ -6723,7 +6718,7 @@ export class Main extends Laya.Script {
         });
         
         // 设置音效路径
-        const soundUrl = "https://specialweek.online/resources/music/button.MP3";
+        const soundUrl = this.getServerResourceUrl("resources/music/button.MP3");
         this.clickSoundEffect.src = soundUrl;
         this.clickSoundEffect.loop = false; // 不循环播放
         this.clickSoundEffect.volume = 1.0; // 音量设置为100%
