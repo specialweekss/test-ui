@@ -147,6 +147,19 @@ export class Main extends Laya.Script {
     private challengeWindowGuideTipLabel: Laya.Text; // 挑战窗口指引提示文字
     private isChallengeWindowGuideActive: boolean = false; // 挑战窗口指引是否激活
     private challengeWindowGuideAutoCloseTimer: Function = null; // 挑战窗口指引自动关闭定时器
+    
+    // 视频播放状态跟踪
+    private isVideoPlaying: boolean = false; // 是否有视频正在播放
+    
+    // 背景音乐相关
+    private backgroundMusic: any = null; // 背景音乐实例（InnerAudioContext）
+    
+    // 点击音效相关
+    private clickSoundEffect: any = null; // 点击音效实例（InnerAudioContext）
+    
+    // 音效和背景音乐开关
+    private soundEnabled: boolean = true; // 音效开关（默认开启）
+    private musicEnabled: boolean = true; // 背景音乐开关（默认开启）
 
     onAwake() {
         console.log("onAwake called");
@@ -154,6 +167,14 @@ export class Main extends Laya.Script {
 
     onEnable() {
         console.log("onEnable called");
+    }
+
+    onDisable() {
+        console.log("onDisable called");
+        // 清理背景音乐资源
+        this.destroyBackgroundMusic();
+        // 清理点击音效资源
+        this.destroyClickSoundEffect();
     }
 
     onStart() {
@@ -398,6 +419,9 @@ export class Main extends Laya.Script {
                 Laya.loader.load(this.getServerResourceUrl("resources/desk.png"), null, null, Laya.Loader.IMAGE);
                 Laya.loader.load(this.getServerResourceUrl("resources/back.png"), null, null, Laya.Loader.IMAGE);
                 
+                // 初始化点击音效（预加载，减少延迟）
+                this.initClickSoundEffect();
+                
                 currentProgress = 20;
                 this.updateProgress(currentProgress);
                 
@@ -529,6 +553,9 @@ export class Main extends Laya.Script {
         
         retryBtn.mouseEnabled = true;
         retryBtn.on(Laya.Event.CLICK, this, () => {
+            // 播放点击音效
+            this.playClickSoundEffect();
+            
             if (isUploadError) {
                 // 上传错误：不关闭弹窗，开始重试
                 GameDataManager.startRetry();
@@ -694,10 +721,16 @@ export class Main extends Laya.Script {
                 
                 // 检查是否需要显示新手指引
                 this.checkAndShowNewbieGuide();
+                
+                // 检查是否需要播放背景音乐（没有视频播放时）
+                this.checkAndPlayBackgroundMusic();
             }));
         } else {
             // 如果没有加载页面，直接检查新手指引
             this.checkAndShowNewbieGuide();
+            
+            // 检查是否需要播放背景音乐（没有视频播放时）
+            this.checkAndPlayBackgroundMusic();
         }
     }
     
@@ -914,13 +947,19 @@ export class Main extends Laya.Script {
         video.onPlay(() => {
             console.log("初始化视频开始播放");
             videoPlayed = true;
+            this.isVideoPlaying = true;
+            // 暂停背景音乐
+            this.pauseBackgroundMusic();
         });
         
         // 监听视频播放结束事件
         video.onEnded(() => {
             console.log("初始化视频播放结束");
             // 视频播放完成后，销毁视频并执行完成回调
+            this.isVideoPlaying = false;
             video.destroy();
+            // 恢复背景音乐播放
+            this.resumeBackgroundMusic();
             if (onComplete) {
                 onComplete();
             }
@@ -930,7 +969,10 @@ export class Main extends Laya.Script {
         video.onError((res: any) => {
             console.error("初始化视频播放失败，错误信息:", res);
             // 播放失败时，销毁视频并执行完成回调（继续进入游戏）
+            this.isVideoPlaying = false;
             video.destroy();
+            // 恢复背景音乐播放
+            this.resumeBackgroundMusic();
             if (onComplete) {
                 onComplete();
             }
@@ -940,7 +982,10 @@ export class Main extends Laya.Script {
         Laya.timer.once(3000, this, () => {
             if (!videoPlayed) {
                 console.warn("初始化视频3秒内未开始播放，视为播放失败，直接进入主页面");
+                this.isVideoPlaying = false;
                 video.destroy();
+                // 恢复背景音乐播放
+                this.resumeBackgroundMusic();
                 if (onComplete) {
                     onComplete();
                 }
@@ -1340,6 +1385,110 @@ export class Main extends Laya.Script {
         }));
 
         console.log("Ticket动画开始，从左滑到右，尺寸:", ticketWidth, "x", ticketHeight);
+    }
+
+    /**
+     * 在点击位置显示Ticket图片，然后变小消失，有弹性效果
+     * @param clickX 点击的X坐标
+     * @param clickY 点击的Y坐标
+     */
+    private showTicketClickAnimation(clickX: number, clickY: number): void {
+        if (!this.ticketContainer) {
+            console.warn("Ticket容器未创建，无法显示点击动画");
+            return;
+        }
+
+        const stageWidth = Laya.stage.width || 750;
+        const stageHeight = Laya.stage.height || 1334;
+        const ticketImagePath = this.getServerResourceUrl("resources/ticket.png");
+
+        // 创建ticket图片精灵
+        const ticketSprite = new Laya.Sprite();
+        ticketSprite.name = "ticketClickSprite_" + Date.now();
+        
+        // 尝试从缓存获取图片，如果没有则加载
+        const cachedTexture = Laya.loader.getRes(ticketImagePath);
+        if (cachedTexture) {
+            // 图片已缓存，直接使用
+            this.createTicketClickSprite(ticketSprite, cachedTexture, clickX, clickY, stageWidth, stageHeight);
+        } else {
+            // 图片未缓存，先加载（从服务器获取）
+            Laya.loader.load(ticketImagePath, Laya.Handler.create(this, (texture: Laya.Texture) => {
+                if (!texture) {
+                    console.error("加载ticket图片失败");
+                    return;
+                }
+                this.createTicketClickSprite(ticketSprite, texture, clickX, clickY, stageWidth, stageHeight);
+            }), null, Laya.Loader.IMAGE);
+        }
+    }
+
+    /**
+     * 创建并显示点击位置的Ticket精灵动画（弹性缩小消失）
+     * @param ticketSprite Ticket精灵
+     * @param texture 图片纹理
+     * @param clickX 点击的X坐标
+     * @param clickY 点击的Y坐标
+     * @param stageWidth 舞台宽度
+     * @param stageHeight 舞台高度
+     */
+    private createTicketClickSprite(ticketSprite: Laya.Sprite, texture: Laya.Texture, clickX: number, clickY: number, stageWidth: number, stageHeight: number): void {
+        // 设置图片
+        ticketSprite.graphics.clear();
+        ticketSprite.graphics.drawTexture(texture, 0, 0);
+        
+        // 使用图片原始尺寸
+        const ticketWidth = texture.width;
+        const ticketHeight = texture.height;
+        ticketSprite.size(ticketWidth, ticketHeight);
+        
+        // 设置为不可点击
+        ticketSprite.mouseEnabled = false;
+        ticketSprite.mouseThrough = true;
+
+        // 设置中心点为缩放中心
+        ticketSprite.pivotX = ticketWidth / 2;
+        ticketSprite.pivotY = ticketHeight / 2;
+
+        // 初始位置：点击位置（以中心点定位）
+        ticketSprite.pos(clickX, clickY);
+
+        // 添加到容器（确保在最上层显示）
+        this.ticketContainer.addChild(ticketSprite);
+        // 设置到最上层
+        this.ticketContainer.setChildIndex(ticketSprite, this.ticketContainer.numChildren - 1);
+
+        // 初始缩放：很小（0.1倍）
+        const initialScale = 0.1;
+        ticketSprite.scaleX = initialScale;
+        ticketSprite.scaleY = initialScale;
+        
+        // 初始透明度
+        ticketSprite.alpha = 1.0;
+
+        // 第一阶段：由很小放大到0.8倍（弹性效果）
+        const expandDuration = 300; // 300ms
+        Laya.Tween.to(ticketSprite, {
+            scaleX: 0.8,
+            scaleY: 0.8
+        }, expandDuration, Laya.Ease.backOut, Laya.Handler.create(this, () => {
+            // 第二阶段：缩小到0并淡出消失
+            const shrinkDuration = 400; // 400ms
+            Laya.Tween.to(ticketSprite, {
+                scaleX: 0,
+                scaleY: 0,
+                alpha: 0
+            }, shrinkDuration, Laya.Ease.backIn, Laya.Handler.create(this, () => {
+                // 动画完成后移除精灵
+                if (ticketSprite && ticketSprite.parent) {
+                    ticketSprite.removeSelf();
+                    ticketSprite.destroy();
+                }
+                console.log("Ticket点击动画完成并移除");
+            }));
+        }));
+
+        console.log("Ticket点击动画开始，位置:", clickX, clickY, "尺寸:", ticketWidth, "x", ticketHeight);
     }
 
     /**
@@ -2436,7 +2585,11 @@ export class Main extends Laya.Script {
         this.challengeWindowGuideMask.mouseThrough = false;
         
         // 添加点击事件：点击任意处关闭指引
-        this.challengeWindowGuideMask.on(Laya.Event.CLICK, this, this.hideChallengeWindowGuide);
+        this.challengeWindowGuideMask.on(Laya.Event.CLICK, this, () => {
+            // 播放点击音效
+            this.playClickSoundEffect();
+            this.hideChallengeWindowGuide();
+        });
         
         // 添加到stage最上层
         Laya.stage.addChild(this.challengeWindowGuideMask);
@@ -2644,6 +2797,9 @@ export class Main extends Laya.Script {
      * 升级按钮点击事件
      */
     private onUpgradeClick(): void {
+        // 播放点击音效
+        this.playClickSoundEffect();
+        
         // 如果升级按钮指引激活，点击后关闭指引
         if (this.isUpgradeBtnGuideActive) {
             this.hideUpgradeBtnGuide();
@@ -2693,6 +2849,9 @@ export class Main extends Laya.Script {
      * 挑战按钮点击事件
      */
     private onChallengeClick(): void {
+        // 播放点击音效
+        this.playClickSoundEffect();
+        
         // 如果挑战按钮指引激活，点击后关闭指引
         if (this.isChallengeBtnGuideActive) {
             this.hideChallengeBtnGuide();
@@ -2713,6 +2872,9 @@ export class Main extends Laya.Script {
      * 助理按钮点击事件
      */
     private onAssistantClick(): void {
+        // 播放点击音效
+        this.playClickSoundEffect();
+        
         // 如果助理按钮指引激活，点击后关闭指引
         if (this.isAssistantGuideActive) {
             this.hideAssistantGuide();
@@ -3230,6 +3392,9 @@ export class Main extends Laya.Script {
      * 处理助理操作（解锁或升级）
      */
     private handleAssistantAction(assistantId: number): void {
+        // 播放点击音效
+        this.playClickSoundEffect();
+        
         const assistant = this.assistants.find(a => a.id === assistantId);
         if (!assistant) {
             console.log("助理不存在，ID:", assistantId);
@@ -3449,6 +3614,9 @@ export class Main extends Laya.Script {
      * 处理助理培训
      */
     private handleTraining(): void {
+        // 播放点击音效
+        this.playClickSoundEffect();
+        
         // 检查是否解锁足够数量的助理
         const unlockedCount = this.assistants.filter(a => a.unlocked).length;
         const requiredCount = Main.TRAINING_REQUIRED_ASSISTANT_COUNT;
@@ -3563,6 +3731,8 @@ export class Main extends Laya.Script {
         // 点击背景遮罩层关闭窗口
         bgMask.on(Laya.Event.CLICK, this, (e: Laya.Event) => {
             e.stopPropagation();
+            // 播放点击音效
+            this.playClickSoundEffect();
             if (onClose) {
                 onClose();
             }
@@ -3610,6 +3780,8 @@ export class Main extends Laya.Script {
             // 添加点击事件：点击后关闭窗口
             closeButton.on(Laya.Event.CLICK, this, (e: Laya.Event) => {
                 e.stopPropagation();
+                // 播放点击音效
+                this.playClickSoundEffect();
                 if (onClose) {
                     onClose();
                 }
@@ -3686,11 +3858,34 @@ export class Main extends Laya.Script {
         titleLabel.mouseEnabled = false;
         this.settingsWindow.addChild(titleLabel);
         
-        // 内容区域（从上到下：头像、等级、点击收益、秒赚、退出按钮）
-        const contentStartY = windowY + Math.max(60, stageHeight * 0.08);
+        // 计算内容区域的可见区域（参考助理窗口的滑动实现）
+        const headerHeight = Math.max(60, stageHeight * 0.08); // 标题区域高度
+        const contentStartY = windowY + headerHeight;
+        const contentAreaHeight = windowHeight - headerHeight - 20; // 减去底部边距
+        
+        // 创建滚动遮罩容器（可见区域）
+        const scrollMask = new Laya.Sprite();
+        scrollMask.name = "settingsScrollMask";
+        scrollMask.size(windowWidth, contentAreaHeight);
+        scrollMask.pos(windowX, contentStartY);
+        scrollMask.mouseEnabled = true;
+        scrollMask.mouseThrough = false;
+        // 设置遮罩，用于裁剪超出区域的内容
+        scrollMask.scrollRect = new Laya.Rectangle(0, 0, windowWidth, contentAreaHeight);
+        this.settingsWindow.addChild(scrollMask);
+        
+        // 创建内容容器（可以超出可见区域）
+        const contentContainer = new Laya.Sprite();
+        contentContainer.name = "settingsContentContainer";
+        contentContainer.pos(0, 0); // 相对于遮罩容器的位置
+        contentContainer.mouseEnabled = true;
+        contentContainer.mouseThrough = false;
+        scrollMask.addChild(contentContainer);
+        
+        // 内容项参数
         const itemSpacing = Math.max(30, stageHeight * 0.04);
         const itemFontSize = Math.max(18, Math.min(stageWidth * 0.045, 24));
-        let currentY = contentStartY;
+        let currentY = 0; // 相对于内容容器的Y坐标
         
         // 1. 头像
         const avatarSize = Math.max(80, Math.min(stageWidth * 0.2, 120));
@@ -3705,9 +3900,10 @@ export class Main extends Laya.Script {
                 settingsAvatar.graphics.drawRect(0, 0, avatarSize, avatarSize, "#5a9");
             }
         }), null, null, 0, false, null, false);
-        settingsAvatar.pos(windowX + (windowWidth - avatarSize) / 2, currentY);
+        settingsAvatar.pos((windowWidth - avatarSize) / 2, currentY);
         settingsAvatar.mouseEnabled = false;
-        this.settingsWindow.addChild(settingsAvatar);
+        settingsAvatar.mouseThrough = true; // 允许鼠标事件穿透，不影响滚动
+        contentContainer.addChild(settingsAvatar);
         currentY += avatarSize + itemSpacing;
         
         // 2. 等级
@@ -3720,9 +3916,10 @@ export class Main extends Laya.Script {
         levelText.height = itemFontSize * 1.5;
         levelText.align = "center";
         levelText.valign = "middle";
-        levelText.pos(windowX, currentY);
+        levelText.pos(0, currentY);
         levelText.mouseEnabled = false;
-        this.settingsWindow.addChild(levelText);
+        levelText.mouseThrough = true; // 允许鼠标事件穿透，不影响滚动
+        contentContainer.addChild(levelText);
         currentY += itemFontSize * 1.5 + itemSpacing;
         
         // 3. 点击收益
@@ -3735,9 +3932,10 @@ export class Main extends Laya.Script {
         clickRewardText.height = itemFontSize * 1.5;
         clickRewardText.align = "center";
         clickRewardText.valign = "middle";
-        clickRewardText.pos(windowX, currentY);
+        clickRewardText.pos(0, currentY);
         clickRewardText.mouseEnabled = false;
-        this.settingsWindow.addChild(clickRewardText);
+        clickRewardText.mouseThrough = true; // 允许鼠标事件穿透，不影响滚动
+        contentContainer.addChild(clickRewardText);
         currentY += itemFontSize * 1.5 + itemSpacing;
         
         // 4. 秒赚
@@ -3750,9 +3948,10 @@ export class Main extends Laya.Script {
         perSecondText.height = itemFontSize * 1.5;
         perSecondText.align = "center";
         perSecondText.valign = "middle";
-        perSecondText.pos(windowX, currentY);
+        perSecondText.pos(0, currentY);
         perSecondText.mouseEnabled = false;
-        this.settingsWindow.addChild(perSecondText);
+        perSecondText.mouseThrough = true; // 允许鼠标事件穿透，不影响滚动
+        contentContainer.addChild(perSecondText);
         currentY += itemFontSize * 1.5 + itemSpacing;
         
         // 4.5. 基础本金/秒赚倍率显示
@@ -3764,10 +3963,11 @@ export class Main extends Laya.Script {
         baseEarningsMultiplierText.height = itemFontSize * 1.5;
         baseEarningsMultiplierText.align = "center";
         baseEarningsMultiplierText.valign = "middle";
-        baseEarningsMultiplierText.pos(windowX, currentY);
+        baseEarningsMultiplierText.pos(0, currentY);
         baseEarningsMultiplierText.mouseEnabled = false;
+        baseEarningsMultiplierText.mouseThrough = true; // 允许鼠标事件穿透，不影响滚动
         this.updateSettingsBaseEarningsMultiplier(baseEarningsMultiplierText);
-        this.settingsWindow.addChild(baseEarningsMultiplierText);
+        contentContainer.addChild(baseEarningsMultiplierText);
         currentY += itemFontSize * 1.5 + itemSpacing;
         
         // 4.6. 当前总倍率加成显示
@@ -3779,20 +3979,31 @@ export class Main extends Laya.Script {
         totalMultiplierText.height = itemFontSize * 1.5;
         totalMultiplierText.align = "center";
         totalMultiplierText.valign = "middle";
-        totalMultiplierText.pos(windowX, currentY);
+        totalMultiplierText.pos(0, currentY);
         totalMultiplierText.mouseEnabled = false;
+        totalMultiplierText.mouseThrough = true; // 允许鼠标事件穿透，不影响滚动
         this.updateSettingsTotalMultiplier(totalMultiplierText);
-        this.settingsWindow.addChild(totalMultiplierText);
+        contentContainer.addChild(totalMultiplierText);
         currentY += itemFontSize * 1.5 + itemSpacing;
         
-        // 5. 退出按钮
+        // 5. 音效开关
+        const soundSwitchItem = this.createSoundSwitchItem(windowWidth, itemFontSize, currentY);
+        contentContainer.addChild(soundSwitchItem);
+        currentY += itemFontSize * 1.5 + itemSpacing;
+        
+        // 6. 背景音乐开关
+        const musicSwitchItem = this.createMusicSwitchItem(windowWidth, itemFontSize, currentY);
+        contentContainer.addChild(musicSwitchItem);
+        currentY += itemFontSize * 1.5 + itemSpacing;
+        
+        // 7. 退出按钮
         const exitBtnWidth = Math.max(120, windowWidth * 0.5);
         const exitBtnHeight = Math.max(50, stageHeight * 0.06);
         const exitBtn = new Laya.Sprite();
         exitBtn.name = "exitBtn";
         exitBtn.size(exitBtnWidth, exitBtnHeight);
         exitBtn.graphics.drawRoundRect(0, 0, exitBtnWidth, exitBtnHeight, 8, 8, 8, 8, "#ff3333");
-        exitBtn.pos(windowX + (windowWidth - exitBtnWidth) / 2, currentY);
+        exitBtn.pos((windowWidth - exitBtnWidth) / 2, currentY);
         exitBtn.mouseEnabled = true;
         exitBtn.mouseThrough = false;
         
@@ -3822,12 +4033,225 @@ export class Main extends Laya.Script {
         // 退出按钮点击事件
         exitBtn.on(Laya.Event.CLICK, this, (e: Laya.Event) => {
             e.stopPropagation();
+            // 播放点击音效
+            this.playClickSoundEffect();
             this.exitGame();
         });
         
-        this.settingsWindow.addChild(exitBtn);
+        contentContainer.addChild(exitBtn);
+        currentY += exitBtnHeight + itemSpacing;
+        
+        // 设置内容容器的高度（用于滚动）
+        contentContainer.height = currentY;
+        
+        // 如果内容超出可见区域，启用滚动
+        if (currentY > contentAreaHeight) {
+            // 添加触摸滚动支持（绑定在scrollMask上，确保所有区域都能滚动）
+            scrollMask.on(Laya.Event.MOUSE_DOWN, this, (e: Laya.Event) => {
+                // 检查点击的是否是可交互元素（按钮、开关等）
+                const target = e.target as Laya.Sprite;
+                // 如果是按钮或开关，不处理滚动
+                if (target && (target.name === "exitBtn" || 
+                    target.name === "soundSwitchBtn" || 
+                    target.name === "musicSwitchBtn" ||
+                    target.parent && (target.parent.name === "soundSwitchBtn" || target.parent.name === "musicSwitchBtn"))) {
+                    return;
+                }
+                
+                const startY = e.stageY;
+                const startScrollY = contentContainer.y;
+                
+                const onMouseMove = (e: Laya.Event) => {
+                    const deltaY = e.stageY - startY;
+                    const newY = startScrollY + deltaY;
+                    // 限制滚动范围
+                    const maxY = 0;
+                    const minY = contentAreaHeight - currentY;
+                    contentContainer.y = Math.max(minY, Math.min(maxY, newY));
+                };
+                
+                const onMouseUp = () => {
+                    Laya.stage.off(Laya.Event.MOUSE_MOVE, this, onMouseMove);
+                    Laya.stage.off(Laya.Event.MOUSE_UP, this, onMouseUp);
+                };
+                
+                Laya.stage.on(Laya.Event.MOUSE_MOVE, this, onMouseMove);
+                Laya.stage.on(Laya.Event.MOUSE_UP, this, onMouseUp);
+            });
+        }
         
         console.log("创建设置窗口，位置:", windowX, windowY, "尺寸:", windowWidth, windowHeight);
+    }
+    
+    /**
+     * 创建音效开关项
+     * @param width 宽度
+     * @param fontSize 字体大小
+     * @param y 垂直位置
+     * @returns 开关项容器
+     */
+    private createSoundSwitchItem(width: number, fontSize: number, y: number): Laya.Sprite {
+        const container = new Laya.Sprite();
+        container.name = "soundSwitchItem";
+        container.size(width, fontSize * 1.5);
+        container.pos(0, y);
+        
+        // 文字标签
+        const label = new Laya.Text();
+        label.name = "soundSwitchLabel";
+        label.text = "音效";
+        label.fontSize = fontSize;
+        label.color = "#333333";
+        label.width = width * 0.6;
+        label.height = fontSize * 1.5;
+        label.align = "left";
+        label.valign = "middle";
+        label.pos(width * 0.1, 0);
+        label.mouseEnabled = false;
+        container.addChild(label);
+        
+        // 开关按钮
+        const switchWidth = Math.max(60, width * 0.25);
+        const switchHeight = Math.max(30, fontSize * 1.2);
+        const switchBtn = new Laya.Sprite();
+        switchBtn.name = "soundSwitchBtn";
+        switchBtn.size(switchWidth, switchHeight);
+        switchBtn.pos(width - switchWidth - width * 0.1, (fontSize * 1.5 - switchHeight) / 2);
+        switchBtn.mouseEnabled = true;
+        switchBtn.mouseThrough = false;
+        
+        // 更新开关显示
+        const updateSwitchDisplay = () => {
+            switchBtn.graphics.clear();
+            if (this.soundEnabled) {
+                // 开启状态：绿色背景
+                switchBtn.graphics.drawRoundRect(0, 0, switchWidth, switchHeight, switchHeight / 2, switchHeight / 2, switchHeight / 2, switchHeight / 2, "#00ff00");
+                // 圆形滑块在右侧
+                const sliderSize = switchHeight * 0.8;
+                const sliderX = switchWidth - sliderSize - (switchHeight - sliderSize) / 2;
+                const sliderY = (switchHeight - sliderSize) / 2;
+                switchBtn.graphics.drawCircle(sliderX + sliderSize / 2, sliderY + sliderSize / 2, sliderSize / 2, "#ffffff");
+            } else {
+                // 关闭状态：灰色背景
+                switchBtn.graphics.drawRoundRect(0, 0, switchWidth, switchHeight, switchHeight / 2, switchHeight / 2, switchHeight / 2, switchHeight / 2, "#cccccc");
+                // 圆形滑块在左侧
+                const sliderSize = switchHeight * 0.8;
+                const sliderX = (switchHeight - sliderSize) / 2;
+                const sliderY = (switchHeight - sliderSize) / 2;
+                switchBtn.graphics.drawCircle(sliderX + sliderSize / 2, sliderY + sliderSize / 2, sliderSize / 2, "#ffffff");
+            }
+        };
+        
+        updateSwitchDisplay();
+        
+        // 点击切换开关
+        switchBtn.on(Laya.Event.CLICK, this, (e: Laya.Event) => {
+            e.stopPropagation();
+            // 播放点击音效（如果音效开启）
+            if (this.soundEnabled) {
+                this.playClickSoundEffect();
+            }
+            this.soundEnabled = !this.soundEnabled;
+            updateSwitchDisplay();
+            console.log("音效开关:", this.soundEnabled ? "开启" : "关闭");
+        });
+        
+        container.addChild(switchBtn);
+        return container;
+    }
+    
+    /**
+     * 创建背景音乐开关项
+     * @param width 宽度
+     * @param fontSize 字体大小
+     * @param y 垂直位置
+     * @returns 开关项容器
+     */
+    private createMusicSwitchItem(width: number, fontSize: number, y: number): Laya.Sprite {
+        const container = new Laya.Sprite();
+        container.name = "musicSwitchItem";
+        container.size(width, fontSize * 1.5);
+        container.pos(0, y);
+        
+        // 文字标签
+        const label = new Laya.Text();
+        label.name = "musicSwitchLabel";
+        label.text = "背景音乐";
+        label.fontSize = fontSize;
+        label.color = "#333333";
+        label.width = width * 0.6;
+        label.height = fontSize * 1.5;
+        label.align = "left";
+        label.valign = "middle";
+        label.pos(width * 0.1, 0);
+        label.mouseEnabled = false;
+        container.addChild(label);
+        
+        // 开关按钮
+        const switchWidth = Math.max(60, width * 0.25);
+        const switchHeight = Math.max(30, fontSize * 1.2);
+        const switchBtn = new Laya.Sprite();
+        switchBtn.name = "musicSwitchBtn";
+        switchBtn.size(switchWidth, switchHeight);
+        switchBtn.pos(width - switchWidth - width * 0.1, (fontSize * 1.5 - switchHeight) / 2);
+        switchBtn.mouseEnabled = true;
+        switchBtn.mouseThrough = false;
+        
+        // 更新开关显示
+        const updateSwitchDisplay = () => {
+            switchBtn.graphics.clear();
+            if (this.musicEnabled) {
+                // 开启状态：绿色背景
+                switchBtn.graphics.drawRoundRect(0, 0, switchWidth, switchHeight, switchHeight / 2, switchHeight / 2, switchHeight / 2, switchHeight / 2, "#00ff00");
+                // 圆形滑块在右侧
+                const sliderSize = switchHeight * 0.8;
+                const sliderX = switchWidth - sliderSize - (switchHeight - sliderSize) / 2;
+                const sliderY = (switchHeight - sliderSize) / 2;
+                switchBtn.graphics.drawCircle(sliderX + sliderSize / 2, sliderY + sliderSize / 2, sliderSize / 2, "#ffffff");
+            } else {
+                // 关闭状态：灰色背景
+                switchBtn.graphics.drawRoundRect(0, 0, switchWidth, switchHeight, switchHeight / 2, switchHeight / 2, switchHeight / 2, switchHeight / 2, "#cccccc");
+                // 圆形滑块在左侧
+                const sliderSize = switchHeight * 0.8;
+                const sliderX = (switchHeight - sliderSize) / 2;
+                const sliderY = (switchHeight - sliderSize) / 2;
+                switchBtn.graphics.drawCircle(sliderX + sliderSize / 2, sliderY + sliderSize / 2, sliderSize / 2, "#ffffff");
+            }
+        };
+        
+        updateSwitchDisplay();
+        
+        // 点击切换开关
+        switchBtn.on(Laya.Event.CLICK, this, (e: Laya.Event) => {
+            e.stopPropagation();
+            // 播放点击音效（如果音效开启）
+            if (this.soundEnabled) {
+                this.playClickSoundEffect();
+            }
+            this.musicEnabled = !this.musicEnabled;
+            updateSwitchDisplay();
+            
+            // 控制背景音乐播放
+            if (this.musicEnabled) {
+                // 开启：如果背景音乐已初始化，恢复播放
+                if (this.backgroundMusic) {
+                    if (!this.isVideoPlaying) {
+                        this.resumeBackgroundMusic();
+                    }
+                } else {
+                    // 如果背景音乐未初始化，初始化并播放
+                    this.checkAndPlayBackgroundMusic();
+                }
+            } else {
+                // 关闭：暂停背景音乐
+                this.pauseBackgroundMusic();
+            }
+            
+            console.log("背景音乐开关:", this.musicEnabled ? "开启" : "关闭");
+        });
+        
+        container.addChild(switchBtn);
+        return container;
     }
     
     /**
@@ -4276,6 +4700,9 @@ export class Main extends Laya.Script {
      * 处理挑战
      */
     private handleChallenge(challengeId: number): void {
+        // 播放点击音效
+        this.playClickSoundEffect();
+        
         const challenge = this.challenges.find(c => c.id === challengeId);
         if (!challenge) {
             console.log("挑战不存在，ID:", challengeId);
@@ -4441,8 +4868,8 @@ export class Main extends Laya.Script {
                 const target = e.target as Laya.Sprite;
                 // 如果点击的是新手指引的可点击区域，触发收益（不立即关闭，等金币达到1500或2秒后自动关闭）
                 if (this.newbieGuideClickArea && (target === this.newbieGuideClickArea || this.newbieGuideClickArea.contains(target))) {
-                    // 触发正常的点击收益逻辑
-                    this.handleClickReward();
+                    // 触发正常的点击收益逻辑，传递点击位置
+                    this.handleClickReward(clickX, clickY);
                     // 检查金币是否达到1500，如果达到则关闭指引
                     this.checkNewbieGuideCloseCondition();
                     return;
@@ -4477,16 +4904,21 @@ export class Main extends Laya.Script {
             const isOnButton = this.isPointOnButton(clickX, clickY);
             
             if (!isOnButton) {
-                // 点击非按钮区域，触发点击收益
-                this.handleClickReward();
+                // 点击非按钮区域，触发点击收益，传递点击位置
+                this.handleClickReward(clickX, clickY);
             }
         });
     }
     
     /**
      * 处理点击收益（增加金钱、显示弹窗、显示动画等）
+     * @param clickX 点击的X坐标（可选）
+     * @param clickY 点击的Y坐标（可选）
      */
-    private handleClickReward(): void {
+    private handleClickReward(clickX?: number, clickY?: number): void {
+        // 播放点击音效（延迟尽量小）
+        this.playClickSoundEffect();
+        
         // 增加金钱（使用当前点击收益：基础值 * 倍率）
                 this.money += this.getClickReward();
                 this.updateMoneyDisplay();
@@ -4495,8 +4927,14 @@ export class Main extends Laya.Script {
                 // 使用money位置类型，会自动计算位置，确保在屏幕上可见
                 this.showPopup("+" + this.formatMoney(this.getClickReward()), "money", "#00ff00");
                 
-                // 显示Ticket滑动动画（从左下方滑到右下方消失）
-                this.showTicketAnimation();
+                // 如果有点击位置，显示点击位置的ticket动画；否则显示滑动动画
+                if (clickX !== undefined && clickY !== undefined) {
+                    // 在点击位置显示ticket图片，然后变小消失，有弹性
+                    this.showTicketClickAnimation(clickX, clickY);
+                } else {
+                    // 显示Ticket滑动动画（从左下方滑到右下方消失）
+                    this.showTicketAnimation();
+                }
                 
                 // 更新点击收益计数，每10次切换一次助理图片
                 this.clickRewardCount++;
@@ -4623,6 +5061,9 @@ export class Main extends Laya.Script {
      * 头像点击事件：打开设置窗口
      */
     private onAvatarClick(): void {
+        // 播放点击音效
+        this.playClickSoundEffect();
+        
         console.log("点击了头像");
         // 如果窗口已存在，先删除
         if (this.settingsWindow) {
@@ -5001,6 +5442,18 @@ export class Main extends Laya.Script {
                     this.upgradeCost = playerInfo.upgradeCost || this.upgradeCost;
                     this.trainingCount = playerInfo.trainingCount || this.trainingCount;
                     
+                    // 恢复音效和背景音乐开关（如果存在）
+                    if (playerInfo.soundEnabled !== undefined) {
+                        this.soundEnabled = playerInfo.soundEnabled;
+                    }
+                    if (playerInfo.musicEnabled !== undefined) {
+                        this.musicEnabled = playerInfo.musicEnabled;
+                        // 如果背景音乐开关关闭，暂停背景音乐
+                        if (!this.musicEnabled && this.backgroundMusic) {
+                            this.pauseBackgroundMusic();
+                        }
+                    }
+                    
                     // 更新显示
                     if (this.levelLabel) {
                         this.levelLabel.text = this.playerLevel + "级";
@@ -5019,6 +5472,13 @@ export class Main extends Laya.Script {
                     
                     // 计算离线收益（如果距离上次更新时间大于1分钟）
                     this.calculateOfflineEarnings(playerInfo.lastUpdateTime);
+                    
+                    // 如果背景音乐开关开启，检查并播放背景音乐（延迟一帧，确保其他初始化完成）
+                    if (this.musicEnabled) {
+                        Laya.timer.frameOnce(1, this, () => {
+                            this.checkAndPlayBackgroundMusic();
+                        });
+                    }
                 } else {
                     console.log("使用默认游戏数据");
                     // 没有数据，直接标记为已处理，可以开始自动保存
@@ -5150,7 +5610,9 @@ export class Main extends Laya.Script {
             this.upgradeCost,
             this.trainingCount,
             this.assistants,
-            this.challenges
+            this.challenges,
+            this.soundEnabled,
+            this.musicEnabled
         );
     }
     
@@ -6073,11 +6535,22 @@ export class Main extends Laya.Script {
             objectFit: "contain" // 保持宽高比，宽度占满屏幕，高度按比例自适应
         });
         
+        // 监听视频播放开始事件
+        video.onPlay(() => {
+            console.log("挑战成功视频开始播放 - 助理ID:", assistantId);
+            this.isVideoPlaying = true;
+            // 暂停背景音乐
+            this.pauseBackgroundMusic();
+        });
+        
         // 监听视频播放结束事件
         video.onEnded(() => {
             console.log("挑战成功视频播放结束 - 助理ID:", assistantId);
             // 视频播放完成后，销毁视频并显示success图片（传入倍率值）
+            this.isVideoPlaying = false;
             video.destroy();
+            // 恢复背景音乐播放
+            this.resumeBackgroundMusic();
             this.showFullScreenSuccessImage(assistantId, multiplierBonusPercent);
         });
         
@@ -6085,13 +6558,234 @@ export class Main extends Laya.Script {
         video.onError((res: any) => {
             console.error("视频播放失败 - 助理ID:", assistantId, "错误信息:", res);
             // 播放失败时，直接显示success图片（传入倍率值）
+            this.isVideoPlaying = false;
             video.destroy();
+            // 恢复背景音乐播放
+            this.resumeBackgroundMusic();
             this.showFullScreenSuccessImage(assistantId, multiplierBonusPercent);
         });
         
         // 开始播放视频
         video.play();
         console.log("挑战成功视频开始播放 - 助理ID:", assistantId);
+    }
+    
+    /**
+     * 检查并播放背景音乐（当没有视频播放时）
+     */
+    private checkAndPlayBackgroundMusic(): void {
+        // 检查背景音乐开关
+        if (!this.musicEnabled) {
+            console.log("背景音乐开关已关闭，跳过背景音乐播放");
+            return;
+        }
+        
+        // 如果有视频正在播放，不播放背景音乐
+        if (this.isVideoPlaying) {
+            console.log("有视频正在播放，跳过背景音乐播放");
+            return;
+        }
+        
+        // 初始化并播放背景音乐
+        this.initBackgroundMusic();
+    }
+    
+    /**
+     * 初始化背景音乐
+     */
+    private initBackgroundMusic(): void {
+        const wx = (window as any).wx;
+        
+        // 检查是否在微信小游戏环境中
+        if (!wx || !wx.createInnerAudioContext) {
+            console.log("不在微信小游戏环境中或不支持音频播放，跳过背景音乐");
+            return;
+        }
+        
+        // 如果背景音乐已存在，先销毁
+        if (this.backgroundMusic) {
+            this.backgroundMusic.destroy();
+            this.backgroundMusic = null;
+        }
+        
+        // 创建背景音乐实例
+        this.backgroundMusic = wx.createInnerAudioContext({
+            useWebAudioImplement: false // 使用 InnerAudio，适合背景音乐
+        });
+        
+        // 设置音乐路径
+        const musicUrl = "https://specialweek.online/resources/music/back.MP3";
+        this.backgroundMusic.src = musicUrl;
+        this.backgroundMusic.loop = true; // 循环播放
+        this.backgroundMusic.volume = 0.5; // 音量设置为50%
+        
+        // 监听音频错误
+        this.backgroundMusic.onError((res: any) => {
+            console.error("背景音乐播放失败，错误信息:", res);
+        });
+        
+        // 监听音频可以播放事件
+        this.backgroundMusic.onCanplay(() => {
+            console.log("背景音乐可以播放了");
+            // 检查背景音乐开关，如果开启则自动播放
+            if (this.musicEnabled && !this.isVideoPlaying) {
+                this.backgroundMusic.play();
+            }
+        });
+        
+        // 监听音频播放开始事件
+        this.backgroundMusic.onPlay(() => {
+            console.log("背景音乐开始播放");
+        });
+        
+        // 监听音频播放结束事件
+        this.backgroundMusic.onEnded(() => {
+            console.log("背景音乐播放结束");
+        });
+        
+        // 监听音频播放停止事件
+        this.backgroundMusic.onStop(() => {
+            console.log("背景音乐播放被停止");
+        });
+        
+        // 监听小游戏显示事件（从后台恢复时恢复播放）
+        wx.onShow(() => {
+            if (this.backgroundMusic && !this.isVideoPlaying) {
+                console.log("小游戏从后台恢复，恢复背景音乐播放");
+                this.backgroundMusic.play();
+            }
+        });
+        
+        // 监听音频中断结束事件（如电话结束后恢复播放）
+        wx.onAudioInterruptionEnd(() => {
+            if (this.backgroundMusic && !this.isVideoPlaying) {
+                console.log("音频中断结束，恢复背景音乐播放");
+                this.backgroundMusic.play();
+            }
+        });
+        
+        console.log("背景音乐初始化完成，音乐URL:", musicUrl);
+    }
+    
+    /**
+     * 暂停背景音乐
+     */
+    private pauseBackgroundMusic(): void {
+        if (this.backgroundMusic) {
+            console.log("暂停背景音乐");
+            this.backgroundMusic.pause();
+        }
+    }
+    
+    /**
+     * 恢复背景音乐播放
+     */
+    private resumeBackgroundMusic(): void {
+        if (this.backgroundMusic && !this.isVideoPlaying) {
+            console.log("恢复背景音乐播放");
+            this.backgroundMusic.play();
+        }
+    }
+    
+    /**
+     * 销毁背景音乐资源
+     */
+    private destroyBackgroundMusic(): void {
+        if (this.backgroundMusic) {
+            console.log("销毁背景音乐资源");
+            this.backgroundMusic.stop();
+            this.backgroundMusic.destroy();
+            this.backgroundMusic = null;
+        }
+    }
+    
+    /**
+     * 初始化点击音效（预加载，减少延迟）
+     */
+    private initClickSoundEffect(): void {
+        const wx = (window as any).wx;
+        
+        // 检查是否在微信小游戏环境中
+        if (!wx || !wx.createInnerAudioContext) {
+            console.log("不在微信小游戏环境中或不支持音频播放，跳过点击音效");
+            return;
+        }
+        
+        // 如果音效已存在，先销毁
+        if (this.clickSoundEffect) {
+            this.clickSoundEffect.destroy();
+            this.clickSoundEffect = null;
+        }
+        
+        // 创建音效实例（使用WebAudio，延迟更小，适合音效）
+        this.clickSoundEffect = wx.createInnerAudioContext({
+            useWebAudioImplement: true // 使用 WebAudio，延迟更小，适合音效
+        });
+        
+        // 设置音效路径
+        const soundUrl = "https://specialweek.online/resources/music/button.MP3";
+        this.clickSoundEffect.src = soundUrl;
+        this.clickSoundEffect.loop = false; // 不循环播放
+        this.clickSoundEffect.volume = 1.0; // 音量设置为100%
+        
+        // 监听音频错误
+        this.clickSoundEffect.onError((res: any) => {
+            console.error("点击音效加载失败，错误信息:", res);
+        });
+        
+        // 监听音频可以播放事件（预加载完成）
+        this.clickSoundEffect.onCanplay(() => {
+            console.log("点击音效预加载完成，可以播放");
+        });
+        
+        console.log("点击音效初始化完成，音效URL:", soundUrl);
+    }
+    
+    /**
+     * 播放点击音效（延迟尽量小）
+     */
+    private playClickSoundEffect(): void {
+        // 检查音效开关
+        if (!this.soundEnabled) {
+            return;
+        }
+        
+        const wx = (window as any).wx;
+        
+        // 检查是否在微信小游戏环境中
+        if (!wx || !wx.createInnerAudioContext) {
+            return;
+        }
+        
+        // 如果音效未初始化，先初始化
+        if (!this.clickSoundEffect) {
+            this.initClickSoundEffect();
+            // 如果初始化后仍然没有，说明不支持，直接返回
+            if (!this.clickSoundEffect) {
+                return;
+            }
+        }
+        
+        try {
+            // 停止当前播放（如果有），然后立即播放（减少延迟）
+            this.clickSoundEffect.stop();
+            this.clickSoundEffect.play();
+            console.log("播放点击音效");
+        } catch (error) {
+            console.error("播放点击音效失败:", error);
+        }
+    }
+    
+    /**
+     * 销毁点击音效资源
+     */
+    private destroyClickSoundEffect(): void {
+        if (this.clickSoundEffect) {
+            console.log("销毁点击音效资源");
+            this.clickSoundEffect.stop();
+            this.clickSoundEffect.destroy();
+            this.clickSoundEffect = null;
+        }
     }
     
     /**

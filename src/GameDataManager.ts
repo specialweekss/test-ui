@@ -4,7 +4,7 @@
  */
 export class GameDataManager {
     // API基础地址（根据环境配置，可通过setApiBaseUrl修改）
-    private static apiBaseUrl: string = "http://119.29.59.200:8080";
+    private static apiBaseUrl: string = "https://specialweek.online";
     
     // 用户ID（存储自定义登录态token）
     private static userId: string = "default_user";
@@ -1296,7 +1296,9 @@ export class GameDataManager {
         upgradeCost: number,
         trainingCount: number,
         assistants: Array<{id: number, unlocked: boolean, level: number}>,
-        challenges: Array<{id: number, completed: boolean}>
+        challenges: Array<{id: number, completed: boolean}>,
+        soundEnabled?: boolean,
+        musicEnabled?: boolean
     ): any {
         return {
             playerInfo: {
@@ -1305,7 +1307,9 @@ export class GameDataManager {
                 clickRewardBase: clickRewardBase,
                 clickMultiplier: clickMultiplier,
                 upgradeCost: upgradeCost,
-                trainingCount: trainingCount
+                trainingCount: trainingCount,
+                soundEnabled: soundEnabled !== undefined ? soundEnabled : true,
+                musicEnabled: musicEnabled !== undefined ? musicEnabled : true
             },
             assistants: assistants.map(a => ({
                 id: a.id,
@@ -1336,6 +1340,8 @@ export class GameDataManager {
         clickMultiplier: number,
         upgradeCost: number,
         trainingCount: number,
+        soundEnabled?: boolean,
+        musicEnabled?: boolean,
         lastUpdateTime?: string
     } | null {
         if (!apiData) {
